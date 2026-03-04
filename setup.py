@@ -24,8 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            # Add your nodes here, e.g.:
-            # 'my_node = multiagent_driving.my_node:main',
+            'track_navigator = multiagent_driving.track_navigator:main',
         ],
     },
 )
