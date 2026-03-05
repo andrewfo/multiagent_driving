@@ -58,10 +58,13 @@ All commits go to the `multiagent_driving` repo, **not** the root `roboracer_ws`
 
 ```bash
 cd ~/roboracer_ws/src/multiagent_driving
+git pull
 git add .
 git commit -m "Your commit message"
 git push
 ```
+
+Always pull before committing to avoid conflicts with teammate changes. If you forget and get a "divergent branches" error, run `git pull --rebase origin main` to fix it.
 
 **Important:** Do not commit or push from the `~/roboracer_ws` root directory — that is the course workspace repo (`ut-av/roboracer_ws`) and your changes won't go to the right place.
 
