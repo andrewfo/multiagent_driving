@@ -77,3 +77,4 @@ cd ~/roboracer_ws
 colcon build --packages-select multiagent_driving
 source install/setup.bash
 ```
+# Chi Ming Access verification
