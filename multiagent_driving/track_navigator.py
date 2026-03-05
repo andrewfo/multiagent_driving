@@ -22,9 +22,8 @@ How to get your waypoint coordinates:
   - Copy x, y from pose.pose.position; compute yaw from pose.pose.orientation
   - OR use RViz2 "Publish Point" tool and click on the map to read coordinates
 """
-
+# These are actually run on the robot itself so don't worry if they're not resolved 
 import math
-
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
