@@ -36,10 +36,7 @@ from nav2_msgs.action import FollowWaypoints
 # ---------------------------------------------------------------------------
 # Waypoints: (x, y) in the map frame.
 # Yaw is auto-computed as the direction toward the next waypoint.
-# Replace these with coordinates from your actual map/track.
-#
-# These are sampled from the ICRA2022_F1Tenth_Track racing line.
-# If you are using a different map, replace ALL of these.
+
 # ---------------------------------------------------------------------------
 TRACK_WAYPOINTS_XY = [
     (-0.3,  -.25),
@@ -170,4 +167,3 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
-    #test comment
