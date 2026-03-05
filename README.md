@@ -52,6 +52,19 @@ vx_max: 0.5  # m/s
 
 Rebuild av_navigation after.
 
+## Pushing your changes
+
+All commits go to the `multiagent_driving` repo, **not** the root `roboracer_ws` repo:
+
+```bash
+cd ~/roboracer_ws/src/multiagent_driving
+git add .
+git commit -m "Your commit message"
+git push
+```
+
+**Important:** Do not commit or push from the `~/roboracer_ws` root directory — that is the course workspace repo (`ut-av/roboracer_ws`) and your changes won't go to the right place.
+
 ## Pulling teammate changes
 
 ```bash
