@@ -4,10 +4,12 @@ Package for getting the Roboracer to drive around a track autonomously using Nav
 
 ## First time setup
 
-Clone the workspace and run checkout to pull all packages including this one:
+Clone the workspace, then clone this package into `src/`:
 
 ```bash
 git clone https://github.com/ut-av/roboracer_ws ~/roboracer_ws
+cd ~/roboracer_ws/src
+git clone https://github.com/andrewfo/multiagent_driving.git
 cd ~/roboracer_ws
 ./scripts/checkout.sh
 ./container build
@@ -15,6 +17,8 @@ cd ~/roboracer_ws
 make
 source install/setup.bash
 ```
+
+**Note:** `multiagent_driving` is a separate repo and is not included when you clone `roboracer_ws` — you must clone it separately into the `src/` directory.
 
 ## How to run
 
