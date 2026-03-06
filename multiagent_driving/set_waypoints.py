@@ -47,7 +47,7 @@ class WaypointRecorder(Node):
         self.create_timer(self._interval, self._sample)
         self.get_logger().info(
             f'Recording a waypoint every {self._interval}s. '
-            'Drive the car around the track, then press Ctrl-C to save.'
+            'Drive the car around the track, press Ctrl-C to save.'
         )
 
     def _pose_cb(self, msg: PoseWithCovarianceStamped):
@@ -56,7 +56,7 @@ class WaypointRecorder(Node):
     def _sample(self):
         if self._latest_pose is None:
             self.get_logger().warn(
-                'No pose received yet on /amcl_pose — is localization running?'
+                'No pose received yet on /amcl_pose'
             )
             return
         x = self._latest_pose.position.x
@@ -68,7 +68,7 @@ class WaypointRecorder(Node):
 
     def save_waypoints(self):
         if not self._waypoints:
-            self.get_logger().warn('No waypoints recorded — nothing to save.')
+            self.get_logger().warn('No waypoints recorded')
             return
 
         # Build the new Python list literal

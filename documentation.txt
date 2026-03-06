@@ -1,0 +1,236 @@
+================================================================================
+  multiagent_driving - Documentation
+  Scripts: set_waypoints & track_navigator
+================================================================================
+
+This package contains two ROS 2 scripts for autonomous lap driving on a
+physical Roboracer car using the Nav2 navigation stack.
+
+  - set_waypoints:    Record waypoints by driving the car manually.
+  - track_navigator:  Replay those waypoints autonomously using Nav2.
+
+The typical workflow is: calibrate the car, build a SLAM map, record waypoints
+with set_waypoints, then run track_navigator to drive laps autonomously.
+
+
+================================================================================
+  PREREQUISITES
+================================================================================
+
+Before using either script you need:
+
+  1. A calibrated car (steering servo and speed gains configured).
+  2. A SLAM map of your track saved to:
+       ~/roboracer_ws/src/av_navigation/av_navigation/maps/<MAP_NAME>.yaml
+     To create a map:
+       cd ~/roboracer_ws/tmux/record_map/ && tmuxinator
+     Drive slowly around the track, then save:
+       export MAP_NAME=track
+       ros2 run nav2_map_server map_saver_cli -f \
+         ~/roboracer_ws/src/av_navigation/av_navigation/maps/${MAP_NAME}
+
+  3. The Nav2 navigation stack running:
+       cd ~/roboracer_ws/tmux/navstack/ && MAP=track tmuxinator
+     OR:
+       ros2 launch av_navigation navigation.launch.py map:=track
+
+  4. nav2.yaml configured with your car's minimum turning radius:
+       min_turning_r: <your_measured_radius>
+       minimum_turning_radius: <your_measured_radius>
+     And twist_to_ackermann.launch.py updated:
+       max_curvature: <1 / your_turning_radius>
+
+  5. Lidar publishing on /scan at >= 10 Hz.
+  6. VESC driver publishing odometry.
+  7. Static transforms active.
+
+  8. Initial pose set in RViz2:
+       - Connect via TurboVNC
+       - Click "2D Pose Estimate" in RViz2
+       - Click and drag on the map to place the car's starting position
+
+
+================================================================================
+  SCRIPT 1: set_waypoints
+================================================================================
+
+PURPOSE
+  Records waypoints from the car's live AMCL localization pose while you drive
+  it manually around the track. When you stop recording (Ctrl-C), it writes the
+  waypoints directly into track_navigator.py, updating the TRACK_WAYPOINTS_XY
+  list so track_navigator is ready to use immediately.
+
+HOW IT WORKS
+  - Subscribes to /amcl_pose (published by the AMCL localization node).
+  - At a fixed interval (default: every 3 seconds), samples the car's current
+    (x, y) position and appends it to an internal list.
+  - On Ctrl-C, overwrites the TRACK_WAYPOINTS_XY variable in track_navigator.py
+    with the recorded coordinates.
+
+USAGE
+
+  Basic (sample every 3 seconds):
+
+    ros2 run multiagent_driving set_waypoints
+
+  Custom interval (sample every 2 seconds):
+
+    ros2 run multiagent_driving set_waypoints --interval 2
+
+  Custom interval (sample every 5 seconds):
+
+    ros2 run multiagent_driving set_waypoints --interval 5
+
+PARAMETERS
+
+  --interval <seconds>   Time between waypoint samples. Default: 3.0
+                          Shorter intervals = more waypoints = smoother path.
+                          Longer intervals = fewer waypoints = simpler path.
+
+STEP-BY-STEP
+
+  1. Make sure the navigation stack is running and the initial pose is set
+     in RViz2 (see Prerequisites above).
+
+  2. SSH into the car and start the script:
+       cd ~/roboracer_ws && ./container shell
+       ros2 run multiagent_driving set_waypoints --interval 3
+
+  3. Drive the car manually around the track at a steady pace.
+     The terminal will show each recorded waypoint:
+       [INFO] [waypoint_recorder]: [1] Recorded waypoint (1.23, -0.45)
+       [INFO] [waypoint_recorder]: [2] Recorded waypoint (2.10, -0.82)
+       ...
+
+  4. Once you have completed a full lap, press Ctrl-C.
+     The script will save all waypoints into track_navigator.py and print
+     the full waypoint list to the terminal.
+
+  5. Rebuild the package so the updated track_navigator.py is installed:
+       cd ~/roboracer_ws
+       colcon build --packages-select multiagent_driving
+       source install/setup.bash
+
+TIPS
+  - Drive at a slow, consistent speed for clean waypoints.
+  - If you see "No pose received yet on /amcl_pose", the localization node
+    is not running or the initial pose has not been set.
+  - You can run the script multiple times; each run fully replaces the
+    previous waypoints.
+  - After saving, review the waypoints in track_navigator.py to remove any
+    outliers or duplicates if needed.
+
+
+================================================================================
+  SCRIPT 2: track_navigator
+================================================================================
+
+PURPOSE
+  Drives the car autonomously around the track in a loop using Nav2's
+  FollowWaypoints action. It sends the waypoints defined in TRACK_WAYPOINTS_XY
+  to the Nav2 waypoint follower, which plans and executes the path through
+  each waypoint in order. The car will drive continuous laps until stopped.
+
+HOW IT WORKS
+  - Connects to the Nav2 FollowWaypoints action server.
+  - Builds PoseStamped messages from the TRACK_WAYPOINTS_XY list.
+  - Yaw at each waypoint is auto-computed to point toward the next waypoint.
+  - Sends the full waypoint list as a goal; Nav2 plans the path.
+  - After completing all waypoints (one lap), it sends them again for the
+    next lap. Repeats until NUM_LAPS is reached or Ctrl-C is pressed.
+
+USAGE
+
+    ros2 run multiagent_driving track_navigator
+
+  There are no command-line arguments. Configuration is done by editing
+  the script directly (see Configuration below).
+
+CONFIGURATION (edit track_navigator.py)
+
+  TRACK_WAYPOINTS_XY   List of (x, y) tuples in the map frame.
+                        Set these by running set_waypoints first, or by
+                        manually reading coordinates from RViz2 / /amcl_pose.
+
+  NUM_LAPS             Number of laps to drive.
+                        - Set to a number (e.g., 5) for a fixed lap count.
+                        - Set to None to loop forever (default).
+
+  Speed                Controlled by Nav2 configuration, not this script.
+                        Edit vx_max in:
+                          src/av_navigation/av_navigation/config/nav2.yaml
+
+STEP-BY-STEP
+
+  1. Make sure the navigation stack is running:
+       cd ~/roboracer_ws/tmux/navstack/ && MAP=track tmuxinator
+
+  2. Set the initial pose in RViz2:
+       - Open RViz2 via TurboVNC
+       - Click "2D Pose Estimate"
+       - Click and drag on the map at the car's actual position
+
+  3. Make sure TRACK_WAYPOINTS_XY has been populated (by running set_waypoints
+     or by manually entering coordinates).
+
+  4. Hold R1 on the PS4 controller (or put joystick in autonomous mode).
+
+  5. Run the navigator:
+       ros2 run multiagent_driving track_navigator
+
+  6. The terminal will show progress:
+       [INFO] [track_navigator]: Waiting for Nav2 FollowWaypoints server...
+       [INFO] [track_navigator]: Server ready. Starting autonomous laps.
+       [INFO] [track_navigator]: --- Lap 1 ---
+       [INFO] [track_navigator]:   -> waypoint 1/12
+       [INFO] [track_navigator]:   -> waypoint 2/12
+       ...
+       [INFO] [track_navigator]: Lap 1 complete! All waypoints reached.
+       [INFO] [track_navigator]: --- Lap 2 ---
+       ...
+
+  7. Press Ctrl-C at any time to stop.
+
+TROUBLESHOOTING
+
+  "Goal rejected by Nav2"
+    - The navigation stack is not running, or the initial pose was not set.
+    - Make sure you clicked "2D Pose Estimate" in RViz2 first.
+
+  "Missed waypoints: [3, 7]"
+    - Nav2 could not reach those waypoints (obstacle in the way, waypoint
+      off the map, or the car couldn't plan a path).
+    - Re-record waypoints or manually adjust the problematic entries.
+
+  Car does not move after goal is accepted
+    - Make sure R1 is held on the PS4 controller.
+    - Check that the VESC driver is running and publishing odometry.
+
+  Car oscillates or drives erratically
+    - Waypoints may be too close together or positioned off the drivable area.
+    - Increase the --interval when recording, or thin out waypoints manually.
+    - Check that nav2.yaml turning radius matches your car's actual capability.
+
+
+================================================================================
+  FULL WORKFLOW SUMMARY
+================================================================================
+
+  # 1. Start the navigation stack
+  cd ~/roboracer_ws/tmux/navstack/ && MAP=track tmuxinator
+
+  # 2. Set initial pose in RViz2 (2D Pose Estimate)
+
+  # 3. Record waypoints (drive the car manually)
+  ros2 run multiagent_driving set_waypoints --interval 3
+  # ... drive one full lap ... then Ctrl-C
+
+  # 4. Rebuild
+  cd ~/roboracer_ws
+  colcon build --packages-select multiagent_driving
+  source install/setup.bash
+
+  # 5. Run autonomous laps (hold R1 on controller)
+  ros2 run multiagent_driving track_navigator
+
+  # 6. Ctrl-C to stop
