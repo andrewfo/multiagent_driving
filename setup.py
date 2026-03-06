@@ -25,6 +25,7 @@ setup(
     entry_points={
         'console_scripts': [
             'track_navigator = multiagent_driving.track_navigator:main',
+            'set_waypoints = multiagent_driving.set_waypoints:main',
         ],
     },
 )
