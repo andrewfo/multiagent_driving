@@ -1,6 +1,6 @@
 import rclpy
 from rclpy.node import Node
-from geometry_msgs.msg import PoseWithCovarianceStamped
+from geometry_msgs.msg import PoseWithCovarianceStamped, PoseArray, Pose
 import json
 import threading
 import websocket
@@ -15,6 +15,13 @@ class WebsocketClientNode(Node):
         # Connect to your central server (Replace with actual server IP)
         self.ws_url = "ws://<CENTRAL_SERVER_IP>:8765"
         self.ws = None
+
+        # NEW: Publisher to send neighbor coordinates to the local costmap
+        self.swarm_pub = self.create_publisher(PoseArray, '/swarm_poses', 10)
+        
+        # Store neighbor poses temporarily
+        self.neighbor_poses = {}
+
         self.setup_websocket()
 
         # Subscribe to the car's own localization pose
@@ -23,6 +30,9 @@ class WebsocketClientNode(Node):
             'amcl_pose',
             self.pose_callback,
             10)
+        
+        # Timer to publish the PoseArray at 10Hz
+        self.create_timer(0.1, self.publish_swarm_poses)
 
     def setup_websocket(self):
         self.ws = websocket.WebSocketApp(
@@ -44,10 +54,24 @@ class WebsocketClientNode(Node):
     def on_message(self, ws, message):
         # This triggers when OTHER cars broadcast their data
         data = json.loads(message)
-        self.get_logger().info(f"Received data from {data.get('car_id')}: x={data.get('x')}, y={data.get('y')}")
+        car_id = data.get('car_id')
         
-        # TODO: Pass this data to your Costmap2D plugin to represent the moving obstacle
+        # Update the neighbor's latest position
+        self.neighbor_poses[car_id] = (data.get('x'), data.get('y'))
 
+    def publish_swarm_poses(self):
+        msg = PoseArray()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = 'map'
+        
+        for car, (x, y) in self.neighbor_poses.items():
+            p = Pose()
+            p.position.x = float(x)
+            p.position.y = float(y)
+            msg.poses.append(p)
+            
+        self.swarm_pub.publish(msg)
+        
     def on_error(self, ws, error):
         self.get_logger().error(f'Websocket error: {error}')
 
