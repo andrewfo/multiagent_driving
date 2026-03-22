@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             'track_navigator = multiagent_driving.track_navigator:main',
             'websocket_client = multiagent_driving.websocket_client_node:main', 
+            'set_waypoints = multiagent_driving.set_waypoints:main',
         ],
     },
 )
