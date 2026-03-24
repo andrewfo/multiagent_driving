@@ -1,0 +1,5 @@
+<library path="swarm_costmap_plugin">
+  <class type="swarm_costmap_plugin::SwarmLayer" base_class_type="nav2_costmap_2d::Layer">
+    <description>Dynamically adds other agents to the local costmap</description>
+  </class>
+</library>
