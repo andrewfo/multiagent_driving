@@ -1,13 +1,16 @@
 ================================================================================
   multiagent_driving - Documentation
-  Scripts: set_waypoints & track_navigator
+  Scripts: set_waypoints, track_navigator, websocket_server & websocket_client
 ================================================================================
 
-This package contains two ROS 2 scripts for autonomous lap driving on a
-physical Roboracer car using the Nav2 navigation stack.
+This package contains ROS 2 scripts for autonomous lap driving on a physical
+Roboracer car using the Nav2 navigation stack, with multi-agent coordination
+over WebSocket.
 
   - set_waypoints:    Record waypoints by driving the car manually.
   - track_navigator:  Replay those waypoints autonomously using Nav2.
+  - websocket_server: Centralized relay server for multi-car state sharing.
+  - websocket_client: ROS 2 node bridging local car state to the server.
 
 The typical workflow is: calibrate the car, build a SLAM map, record waypoints
 with set_waypoints, then run track_navigator to drive laps autonomously.
@@ -213,7 +216,199 @@ TROUBLESHOOTING
 
 
 ================================================================================
-  FULL WORKFLOW SUMMARY
+  SCRIPT 3: websocket_server
+================================================================================
+
+PURPOSE
+  A centralized WebSocket relay server that receives JSON state messages from
+  each connected car and broadcasts them to all other cars. Run this on one
+  car or on a laptop that is on the same network as all participating cars.
+
+HOW IT WORKS
+  - Listens for incoming WebSocket connections on a configurable host/port.
+  - When a car connects, it immediately receives the last-known state of
+    every other car already in the session (no stale start).
+  - Each incoming JSON message is cached (keyed by car_id) and broadcast to
+    all other connected peers.
+  - When a car disconnects its cached state is removed so remaining cars
+    no longer see a phantom obstacle.
+
+PROTOCOL
+  Every message is a JSON object:
+
+    {
+      "car_id":    "car1",           // derived from ROS namespace
+      "x":         1.234,            // map-frame position
+      "y":         5.678,
+      "yaw":       0.7854,           // heading in radians
+      "obstacles": [                 // optional local obstacle detections
+        {"x": 3.0, "y": 4.0},
+        {"x": 3.5, "y": 4.2}
+      ]
+    }
+
+USAGE
+
+  Standalone (no ROS required):
+
+    python3 websocket.py --host 0.0.0.0 --port 8765
+
+  Via ros2 run (after colcon build):
+
+    ros2 run multiagent_driving websocket_server
+    ros2 run multiagent_driving websocket_server -- --port 9000
+
+PARAMETERS
+
+  --host <address>   Network interface to bind. Default: 0.0.0.0 (all).
+  --port <number>    Port to listen on. Default: 8765.
+
+STEP-BY-STEP
+
+  1. Choose one machine to act as the server. It must be reachable by all
+     cars on the network. Note its IP address (e.g., 192.168.1.100).
+
+  2. Start the server:
+       ros2 run multiagent_driving websocket_server
+
+  3. You should see:
+       WebSocket server listening on ws://0.0.0.0:8765
+
+  4. On each car, start the websocket_client node (see Script 4).
+
+  5. The server terminal will log connections and disconnections:
+       [+] New connection (1 total)
+       [+] New connection (2 total)
+       [-] car2 disconnected (1 remaining)
+
+  6. Press Ctrl-C to shut down the server.
+
+TIPS
+  - The server has no ROS dependencies and can run on any machine with
+    Python 3 and the websockets library (pip install websockets).
+  - Only one server should be running at a time on a given port.
+
+
+================================================================================
+  SCRIPT 4: websocket_client
+================================================================================
+
+PURPOSE
+  A ROS 2 node that runs on each car and bridges local state to the
+  centralized WebSocket server. It sends the car's own pose (and any local
+  obstacle detections) to the server and publishes other cars' poses on ROS
+  topics so the Nav2 costmap can treat them as obstacles.
+
+HOW IT WORKS
+  - Subscribes to amcl_pose to get this car's localized position.
+  - Optionally subscribes to /obstacles (PoseArray) for local obstacle data.
+  - Sends a JSON message to the server each time the car's pose updates.
+  - Receives JSON messages from the server about other cars and publishes:
+      /swarm_poses     (PoseArray) – other cars' positions and orientations.
+      /swarm_obstacles (PoseArray) – obstacles reported by other cars.
+  - The SwarmLayer costmap plugin subscribes to /swarm_poses and marks those
+    locations as lethal obstacles in the Nav2 costmap.
+  - If the connection drops, the node automatically reconnects every 5 s.
+
+USAGE
+
+    ros2 run multiagent_driving websocket_client \
+      --ros-args -p server_ip:=192.168.1.100 -p server_port:=8765
+
+ROS PARAMETERS
+
+  server_ip    (string)  IP address of the WebSocket server.
+                          Default: "localhost"
+
+  server_port  (int)     Port of the WebSocket server.
+                          Default: 8765
+
+SUBSCRIPTIONS
+
+  amcl_pose       (PoseWithCovarianceStamped)  This car's localization.
+  /obstacles      (PoseArray)                  Local obstacle detections
+                                                (optional, only sent if
+                                                 a node publishes on this
+                                                 topic).
+
+PUBLICATIONS
+
+  /swarm_poses    (PoseArray)   Poses of all other connected cars, in the
+                                 map frame. Published at 10 Hz. Consumed by
+                                 the SwarmLayer costmap plugin.
+
+  /swarm_obstacles (PoseArray)  Obstacles reported by other cars, in the
+                                 map frame. Published at 10 Hz. Can be
+                                 consumed by an additional costmap layer or
+                                 a planner node if desired.
+
+STEP-BY-STEP
+
+  1. Make sure the websocket_server is running on the chosen host and
+     note its IP address (e.g., 192.168.1.100).
+
+  2. Make sure the navigation stack and AMCL localization are running on
+     the car (see Prerequisites).
+
+  3. Start the client:
+       ros2 run multiagent_driving websocket_client \
+         --ros-args -p server_ip:=192.168.1.100
+
+  4. The terminal will show:
+       [INFO] [websocket_client_node]: [car1] WebSocket client targeting
+              ws://192.168.1.100:8765
+       [INFO] [websocket_client_node]: [car1] Connected to
+              ws://192.168.1.100:8765
+
+  5. Repeat on every car. Each car derives its unique ID from its ROS
+     namespace (e.g., /car1 -> "car1"). Set namespaces via:
+       ros2 run multiagent_driving websocket_client \
+         --ros-args -r __ns:=/car2 -p server_ip:=192.168.1.100
+
+  6. Verify that /swarm_poses is being published:
+       ros2 topic echo /swarm_poses
+
+TROUBLESHOOTING
+
+  "WebSocket error: [Errno 111] Connection refused"
+    - The server is not running or is not reachable at the given IP/port.
+    - Check that the server is started and firewall rules allow the port.
+    - The node will keep retrying every 5 seconds.
+
+  /swarm_poses is published but always empty
+    - No other cars are connected to the same server.
+    - Or the other cars have not set their initial pose in RViz2 yet
+      (AMCL is not publishing amcl_pose).
+
+  Cars see each other but Nav2 does not avoid them
+    - Make sure the SwarmLayer costmap plugin is enabled in nav2.yaml.
+    - See the swarm_costmap_plugin package documentation.
+
+
+================================================================================
+  MULTI-CAR WORKFLOW SUMMARY
+================================================================================
+
+  # 1. Start the navigation stack on every car
+  cd ~/roboracer_ws/tmux/navstack/ && MAP=track tmuxinator
+
+  # 2. Set initial pose in RViz2 on every car (2D Pose Estimate)
+
+  # 3. Start the WebSocket server on one machine
+  ros2 run multiagent_driving websocket_server
+
+  # 4. Start the WebSocket client on every car
+  ros2 run multiagent_driving websocket_client \
+    --ros-args -r __ns:=/car1 -p server_ip:=<SERVER_IP>
+
+  # 5. Start autonomous driving on every car (hold R1 on controller)
+  ros2 run multiagent_driving track_navigator
+
+  # 6. Ctrl-C to stop
+
+
+================================================================================
+  SINGLE-CAR WORKFLOW SUMMARY
 ================================================================================
 
   # 1. Start the navigation stack
