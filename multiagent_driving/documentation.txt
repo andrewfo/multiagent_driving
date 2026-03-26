@@ -1,6 +1,7 @@
 ================================================================================
   multiagent_driving - Documentation
-  Scripts: set_waypoints, track_navigator, websocket_server & websocket_client
+  Scripts: set_waypoints, track_navigator, websocket_server, websocket_client
+           & car_filter
 ================================================================================
 
 This package contains ROS 2 scripts for autonomous lap driving on a physical
@@ -11,6 +12,7 @@ over WebSocket.
   - track_navigator:  Replay those waypoints autonomously using Nav2.
   - websocket_server: Centralized relay server for multi-car state sharing.
   - websocket_client: ROS 2 node bridging local car state to the server.
+  - car_filter:       Filters lidar scans to prevent double-counting cars.
 
 The typical workflow is: calibrate the car, build a SLAM map, record waypoints
 with set_waypoints, then run track_navigator to drive laps autonomously.
@@ -386,6 +388,114 @@ TROUBLESHOOTING
 
 
 ================================================================================
+  SCRIPT 5: car_filter
+================================================================================
+
+PURPOSE
+  Prevents Nav2 from double-counting other cars as unknown obstacles. Without
+  this node, each car appears twice in the costmap: once from the lidar's
+  obstacle layer (as an unknown obstacle) and once from the SwarmLayer (as a
+  known car). The double-counting inflates the perceived obstacle size and can
+  cause Nav2 to plan unnecessarily wide detours or fail to find a path.
+
+  The car_filter node removes laser scan points that fall within a configurable
+  radius of any known car position, then republishes the cleaned scan on
+  /scan_filtered. The Nav2 obstacle layers read /scan_filtered instead of
+  /scan, so they only see real obstacles (walls, cones, pedestrians) while the
+  SwarmLayer handles car avoidance.
+
+HOW IT WORKS
+  - Subscribes to /scan (raw lidar), /swarm_poses (known car positions from
+    the websocket_client), and amcl_pose (this car's localization).
+  - For each laser scan, projects every scan point into the map frame using
+    the car's current AMCL pose.
+  - Checks each projected point against all known car positions. If a point
+    falls within car_radius of any car, it is replaced with an out-of-range
+    value (range_max + 1.0). This causes the obstacle layer to ignore the
+    point while still allowing raytracing to clear the space behind it.
+  - Publishes the filtered scan on /scan_filtered at the same rate as /scan.
+
+USAGE
+
+    ros2 run multiagent_driving car_filter
+
+  With custom radius (default is 0.25 m):
+
+    ros2 run multiagent_driving car_filter \
+      --ros-args -p car_radius:=0.30
+
+ROS PARAMETERS
+
+  car_radius   (float)  Radius around each known car within which scan
+                         points are filtered out. Default: 0.25 m.
+                         Increase if cars still appear as ghost obstacles.
+                         Decrease if real obstacles near cars are being
+                         incorrectly filtered.
+
+SUBSCRIPTIONS
+
+  /scan         (LaserScan)                  Raw lidar data.
+  /swarm_poses  (PoseArray)                  Other cars' poses from
+                                              websocket_client (map frame).
+  amcl_pose     (PoseWithCovarianceStamped)  This car's localization.
+
+PUBLICATIONS
+
+  /scan_filtered (LaserScan)  Cleaned scan with car-occupied points removed.
+                               Consumed by the obstacle_layer (global costmap)
+                               and voxel_layer (local costmap) in nav2.yaml.
+
+NAV2 CONFIGURATION
+
+  The car_filter node requires that the obstacle layers in nav2.yaml read
+  /scan_filtered instead of /scan. This change has already been made:
+
+    global_costmap → obstacle_layer → scan → topic: /scan_filtered
+    local_costmap  → voxel_layer    → scan → topic: /scan_filtered
+
+  The collision_monitor still reads the raw /scan topic for safety — it
+  should always see all obstacles including other cars.
+
+STEP-BY-STEP
+
+  1. Make sure the navigation stack is running and AMCL is publishing
+     amcl_pose (initial pose set in RViz2).
+
+  2. Make sure the websocket_client is running and /swarm_poses is being
+     published (at least one other car connected to the server).
+
+  3. Start the filter node:
+       ros2 run multiagent_driving car_filter
+
+  4. Verify that /scan_filtered is being published:
+       ros2 topic echo /scan_filtered --once
+
+  5. The Nav2 costmap will now use the filtered scan automatically.
+
+TROUBLESHOOTING
+
+  Cars still appear as ghost obstacles in the costmap
+    - Increase car_radius: --ros-args -p car_radius:=0.35
+    - Check that /swarm_poses is being published and contains the other
+      cars' poses: ros2 topic echo /swarm_poses
+    - Check that amcl_pose is being published (initial pose must be set).
+
+  Real obstacles near cars are being filtered out
+    - Decrease car_radius: --ros-args -p car_radius:=0.20
+    - This is a trade-off; the default 0.25 m works well for standard
+      Roboracer cars (0.30 m long x 0.18 m wide).
+
+  /scan_filtered is not being published
+    - Check that /scan is being published by the lidar driver.
+    - Check the node is running: ros2 node list | grep car_filter
+
+  Nav2 is not using the filtered scan
+    - Verify nav2.yaml has topic: /scan_filtered in both the obstacle_layer
+      and voxel_layer sections.
+    - Restart the navigation stack after changing nav2.yaml.
+
+
+================================================================================
   MULTI-CAR WORKFLOW SUMMARY
 ================================================================================
 
@@ -401,10 +511,13 @@ TROUBLESHOOTING
   ros2 run multiagent_driving websocket_client \
     --ros-args -r __ns:=/car1 -p server_ip:=<SERVER_IP>
 
-  # 5. Start autonomous driving on every car (hold R1 on controller)
+  # 5. Start the car filter on every car (prevents double-counting)
+  ros2 run multiagent_driving car_filter
+
+  # 6. Start autonomous driving on every car (hold R1 on controller)
   ros2 run multiagent_driving track_navigator
 
-  # 6. Ctrl-C to stop
+  # 7. Ctrl-C to stop
 
 
 ================================================================================
