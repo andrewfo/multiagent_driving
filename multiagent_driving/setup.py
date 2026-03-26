@@ -28,6 +28,7 @@ setup(
             'websocket_client = multiagent_driving.websocket_client_node:main',
             'websocket_server = multiagent_driving.websocket:main',
             'set_waypoints = multiagent_driving.set_waypoints:main',
+            'car_filter = multiagent_driving.car_filter_node:main',
         ],
     },
 )
