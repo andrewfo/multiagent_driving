@@ -236,18 +236,35 @@ HOW IT WORKS
     no longer see a phantom obstacle.
 
 PROTOCOL
-  Every message is a JSON object:
+  Two message types flow through the server:
+
+  State message (car -> server -> all peers):
 
     {
-      "car_id":    "car1",           // derived from ROS namespace
-      "x":         1.234,            // map-frame position
-      "y":         5.678,
-      "yaw":       0.7854,           // heading in radians
-      "obstacles": [                 // optional local obstacle detections
+      "car_id":       "car1",           // derived from ROS namespace
+      "x":            1.234,            // map-frame position
+      "y":            5.678,
+      "yaw":          0.7854,           // heading in radians
+      "vx":           0.35,             // linear velocity (m/s)
+      "status":       "navigating",     // "navigating" or "idle"
+      "current_goal": {"x": 3.0, "y": -2.0},  // current goal or null
+      "obstacles": [                    // optional local obstacle detections
         {"x": 3.0, "y": 4.0},
         {"x": 3.5, "y": 4.2}
       ]
     }
+
+  Command message (commander -> server -> target car only):
+
+    {
+      "type":       "command",
+      "target_car": "car1",
+      "action":     "navigate",         // action name
+      "goal":       {"x": 3.0, "y": -2.0}  // action-specific payload
+    }
+
+  Command messages are routed only to the target car. The car's
+  websocket_client publishes received commands on /commander_cmd (String).
 
 USAGE
 
@@ -303,13 +320,18 @@ PURPOSE
 
 HOW IT WORKS
   - Subscribes to amcl_pose to get this car's localized position.
+  - Subscribes to /odom (Odometry) to read linear velocity (vx).
   - Optionally subscribes to /obstacles (PoseArray) for local obstacle data.
-  - Sends a JSON message to the server each time the car's pose updates.
+  - Sends a JSON state message to the server each time the car's pose updates.
+    The message includes vx, status ("navigating"/"idle"), and current_goal.
   - Receives JSON messages from the server about other cars and publishes:
       /swarm_poses     (PoseArray) – other cars' positions and orientations.
       /swarm_obstacles (PoseArray) – obstacles reported by other cars.
+  - Receives command messages (type: "command") from the server and publishes
+    them on /commander_cmd (String) for a goal executor node to consume.
   - The SwarmLayer costmap plugin subscribes to /swarm_poses and marks those
     locations as lethal obstacles in the Nav2 costmap.
+  - Automatically removes stale neighbors not heard from in over 2 seconds.
   - If the connection drops, the node automatically reconnects every 5 s.
 
 USAGE
@@ -328,6 +350,7 @@ ROS PARAMETERS
 SUBSCRIPTIONS
 
   amcl_pose       (PoseWithCovarianceStamped)  This car's localization.
+  /odom           (Odometry)                   Odometry for linear velocity.
   /obstacles      (PoseArray)                  Local obstacle detections
                                                 (optional, only sent if
                                                  a node publishes on this
@@ -343,6 +366,10 @@ PUBLICATIONS
                                  map frame. Published at 10 Hz. Can be
                                  consumed by an additional costmap layer or
                                  a planner node if desired.
+
+  /commander_cmd  (String)      JSON command messages received from the
+                                 centralized commander via the server.
+                                 Consumed by a goal executor node.
 
 STEP-BY-STEP
 

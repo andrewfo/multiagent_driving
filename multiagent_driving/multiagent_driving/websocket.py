@@ -4,14 +4,28 @@ Centralized WebSocket server for multi-agent ROS2 driving.
 
 Run this on one car (or a laptop on the same network). It receives JSON
 state messages from each connected car and broadcasts them to all others.
+It also routes command messages from a commander to individual cars.
 
-Protocol – every message is a JSON object with at least:
+Protocol – two message types:
+
+  State (car -> server -> all peers):
   {
-    "car_id":    "<namespace>",
-    "x":         <float>,
-    "y":         <float>,
-    "yaw":       <float>,
-    "obstacles": [ {"x": <float>, "y": <float>}, ... ]   # optional
+    "car_id":       "<namespace>",
+    "x":            <float>,
+    "y":            <float>,
+    "yaw":          <float>,
+    "vx":           <float>,              // linear velocity
+    "status":       "navigating"|"idle",  // derived from velocity
+    "current_goal": {"x": <f>, "y": <f>} | null,
+    "obstacles":    [ {"x": <f>, "y": <f>}, ... ]   // optional
+  }
+
+  Command (commander -> server -> target car):
+  {
+    "type":       "command",
+    "target_car": "<car_id>",
+    "action":     "<action_name>",
+    ...action-specific fields...
   }
 
 New connections immediately receive the latest known state of every other
@@ -27,12 +41,15 @@ import websockets
 # car_id -> latest JSON state (kept as raw string for fast relay)
 latest_state: dict[str, str] = {}
 
+# car_id -> websocket handle (for targeted command routing)
+car_sockets: dict = {}
+
 # All currently connected websocket handles
 connected: set = set()
 
 
 async def handle_connection(websocket):
-    """Handle a single car's lifecycle: register, relay, unregister."""
+    """Handle a single car's (or commander's) lifecycle: register, relay, unregister."""
     connected.add(websocket)
     car_id = None
     print(f"[+] New connection ({len(connected)} total)")
@@ -46,19 +63,33 @@ async def handle_connection(websocket):
 
     try:
         async for raw in websocket:
-            # Parse just enough to extract car_id and cache the message
             try:
                 data = json.loads(raw)
             except json.JSONDecodeError:
                 continue
 
+            # --- Command messages: route to target car only ---
+            if data.get("type") == "command":
+                target = data.get("target_car")
+                if target and target in car_sockets:
+                    try:
+                        await car_sockets[target].send(raw)
+                        print(f"[>] Command -> {target}: {data.get('action', '?')}")
+                    except websockets.exceptions.ConnectionClosed:
+                        print(f"[!] Failed to send command to {target} (disconnected)")
+                else:
+                    print(f"[!] Command for unknown car: {target}")
+                continue
+
+            # --- State messages: cache and broadcast to peers ---
             car_id = data.get("car_id")
             if car_id is None:
                 continue
 
+            car_sockets[car_id] = websocket
             latest_state[car_id] = raw
 
-            # Broadcast to every *other* connected car
+            # Broadcast to every *other* connected client
             peers = [c for c in connected if c is not websocket]
             if peers:
                 await asyncio.gather(
@@ -69,8 +100,9 @@ async def handle_connection(websocket):
         pass
     finally:
         connected.discard(websocket)
-        if car_id and car_id in latest_state:
-            del latest_state[car_id]
+        if car_id:
+            latest_state.pop(car_id, None)
+            car_sockets.pop(car_id, None)
         label = car_id or "unknown"
         print(f"[-] {label} disconnected ({len(connected)} remaining)")
 

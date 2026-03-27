@@ -27,9 +27,12 @@ public:
 
 private:
   void poseCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
-  
+  void obstacleCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
+
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr sub_;
+  rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr obstacle_sub_;
   geometry_msgs::msg::PoseArray last_poses_;
+  geometry_msgs::msg::PoseArray last_obstacles_;
   std::mutex mutex_;
 };
 
