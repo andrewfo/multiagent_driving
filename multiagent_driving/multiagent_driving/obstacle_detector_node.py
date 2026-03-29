@@ -11,6 +11,7 @@ Subscriptions
 -------------
 /scan_filtered  (LaserScan)                – lidar with car points removed
 amcl_pose       (PoseWithCovarianceStamped) – this car's localisation
+/map            (OccupancyGrid)            – static map for filtering known walls
 
 Publications
 ------------
@@ -24,6 +25,7 @@ import rclpy
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, ReliabilityPolicy, DurabilityPolicy
 from geometry_msgs.msg import Pose, PoseArray, PoseWithCovarianceStamped
+from nav_msgs.msg import OccupancyGrid
 from sensor_msgs.msg import LaserScan
 
 
@@ -35,10 +37,12 @@ class ObstacleDetectorNode(Node):
         self.declare_parameter("cluster_distance", 0.3)
         self.declare_parameter("min_cluster_size", 3)
         self.declare_parameter("publish_rate", 10.0)
+        self.declare_parameter("map_occupied_thresh", 50)
 
         self.cluster_distance = self.get_parameter("cluster_distance").value
         self.min_cluster_size = self.get_parameter("min_cluster_size").value
         publish_rate = self.get_parameter("publish_rate").value
+        self.map_occupied_thresh = self.get_parameter("map_occupied_thresh").value
 
         # State
         self._lock = threading.Lock()
@@ -47,6 +51,7 @@ class ObstacleDetectorNode(Node):
         self._robot_yaw = 0.0
         self._have_pose = False
         self._latest_scan: LaserScan | None = None
+        self._map: OccupancyGrid | None = None
 
         # Subscribers
         sensor_qos = QoSProfile(
@@ -59,6 +64,14 @@ class ObstacleDetectorNode(Node):
         )
         self.create_subscription(
             PoseWithCovarianceStamped, "amcl_pose", self._pose_cb, 10
+        )
+        map_qos = QoSProfile(
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+            depth=1,
+        )
+        self.create_subscription(
+            OccupancyGrid, "/map", self._map_cb, map_qos
         )
 
         # Publisher
@@ -89,6 +102,14 @@ class ObstacleDetectorNode(Node):
         with self._lock:
             self._latest_scan = msg
 
+    def _map_cb(self, msg: OccupancyGrid):
+        with self._lock:
+            self._map = msg
+        self.get_logger().info(
+            f"Static map received ({msg.info.width}x{msg.info.height}, "
+            f"res={msg.info.resolution:.3f}m)"
+        )
+
     def _timer_cb(self):
         with self._lock:
             scan = self._latest_scan
@@ -97,12 +118,19 @@ class ObstacleDetectorNode(Node):
             robot_x = self._robot_x
             robot_y = self._robot_y
             robot_yaw = self._robot_yaw
+            static_map = self._map
             self._latest_scan = None  # consume it
 
         # Convert scan to map-frame XY points
         points = _scan_to_map_points(scan, robot_x, robot_y, robot_yaw)
         if not points:
             return
+
+        # Filter out points that fall on known walls/obstacles in the static map
+        if static_map is not None:
+            points = _filter_static_map(points, static_map, self.map_occupied_thresh)
+            if not points:
+                return
 
         # Cluster and compute centroids
         clusters = _cluster_points(points, self.cluster_distance)
@@ -131,6 +159,36 @@ def _quaternion_to_yaw(x, y, z, w) -> float:
     siny_cosp = 2.0 * (w * z + x * y)
     cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
     return math.atan2(siny_cosp, cosy_cosp)
+
+
+def _filter_static_map(
+    points: list[tuple[float, float]],
+    static_map: OccupancyGrid,
+    occupied_thresh: int,
+) -> list[tuple[float, float]]:
+    """Remove points that land on occupied cells in the static map."""
+    info = static_map.info
+    ox = info.origin.position.x
+    oy = info.origin.position.y
+    res = info.resolution
+    width = info.width
+    height = info.height
+    data = static_map.data
+
+    novel = []
+    for mx, my in points:
+        # Convert map-frame coords to grid cell
+        col = int((mx - ox) / res)
+        row = int((my - oy) / res)
+        if 0 <= col < width and 0 <= row < height:
+            cell = data[row * width + col]
+            # cell: 0=free, 100=occupied, -1=unknown
+            if cell < occupied_thresh and cell >= 0:
+                novel.append((mx, my))
+        # Points outside the map bounds are kept (unknown territory)
+        else:
+            novel.append((mx, my))
+    return novel
 
 
 def _scan_to_map_points(

@@ -1,18 +1,19 @@
 ================================================================================
   multiagent_driving - Documentation
-  Scripts: set_waypoints, track_navigator, websocket_server, websocket_client
-           & car_filter
+  Scripts: set_waypoints, track_navigator, websocket_server, websocket_client,
+           car_filter & obstacle_detector
 ================================================================================
 
 This package contains ROS 2 scripts for autonomous lap driving on a physical
 Roboracer car using the Nav2 navigation stack, with multi-agent coordination
 over WebSocket.
 
-  - set_waypoints:    Record waypoints by driving the car manually.
-  - track_navigator:  Replay those waypoints autonomously using Nav2.
-  - websocket_server: Centralized relay server for multi-car state sharing.
-  - websocket_client: ROS 2 node bridging local car state to the server.
-  - car_filter:       Filters lidar scans to prevent double-counting cars.
+  - set_waypoints:      Record waypoints by driving the car manually.
+  - track_navigator:    Replay those waypoints autonomously using Nav2.
+  - websocket_server:   Centralized relay server for multi-car state sharing.
+  - websocket_client:   ROS 2 node bridging local car state to the server.
+  - car_filter:         Filters lidar scans to prevent double-counting cars.
+  - obstacle_detector:  Detects novel obstacles from lidar and shares them.
 
 The typical workflow is: calibrate the car, build a SLAM map, record waypoints
 with set_waypoints, then run track_navigator to drive laps autonomously.
@@ -523,6 +524,178 @@ TROUBLESHOOTING
 
 
 ================================================================================
+  SCRIPT 6: obstacle_detector
+================================================================================
+
+PURPOSE
+  Detects novel (non-wall) obstacles from the filtered lidar scan and publishes
+  their positions on /obstacles. This is the node that feeds the existing
+  obstacle-sharing pipeline: other cars receive these obstacles via the
+  websocket_client and mark them in their costmaps via the SwarmLayer plugin.
+
+  Without this node, the /obstacles topic has no publisher and obstacle sharing
+  between cars does not happen. Each car's lidar detections stay local only.
+
+HOW IT WORKS
+  - Subscribes to /scan_filtered (lidar with car points already removed by
+    car_filter) and amcl_pose (this car's localization).
+  - Subscribes to /map (OccupancyGrid) to learn the static environment.
+  - On a timer (default 10 Hz), processes the latest scan:
+      1. Converts scan polar coordinates to (x, y) points in the map frame
+         using the car's AMCL pose.
+      2. Filters out points that correspond to known walls using the static
+         map 
+      3. Clusters the remaining points using single-linkage Euclidean
+         clustering (default threshold: 0.3 m).
+      4. Discards clusters with fewer than min_cluster_size points (default: 3)
+         to suppress noise.
+      5. Computes the centroid of each surviving cluster.
+  - Publishes centroids as a PoseArray on /obstacles (frame: map).
+
+DATA FLOW
+
+  /scan_filtered (lidar, cars removed)
+       |
+       v
+  obstacle_detector_node
+       |  - projects to map frame
+       |  - filters out static-map walls
+       |  - clusters remaining points
+       |  - publishes centroids
+       v
+  /obstacles (PoseArray)
+       |
+       v
+  websocket_client_node  ---->  WebSocket server  ---->  other cars
+       |                                                      |
+       v                                                      v
+  (local car ignores                                 /swarm_obstacles
+   its own obstacles                                      |
+   from /swarm_obstacles)                                 v
+                                                    SwarmLayer plugin
+                                                         |
+                                                         v
+                                                  costmap lethal cells
+                                                         |
+                                                         v
+                                                  Nav2 plans around them
+
+USAGE
+
+    ros2 run multiagent_driving obstacle_detector
+
+  With custom parameters:
+
+    ros2 run multiagent_driving obstacle_detector \
+      --ros-args -p cluster_distance:=0.4 -p min_cluster_size:=5
+
+ROS PARAMETERS
+
+  cluster_distance     (float)  Maximum Euclidean distance between two scan
+                                 points for them to be in the same cluster.
+                                 Default: 0.3 m.
+                                 Increase if obstacles are being split into
+                                 multiple detections. Decrease if separate
+                                 obstacles are being merged into one.
+
+  min_cluster_size     (int)    Minimum number of scan points required for a
+                                 cluster to count as an obstacle.
+                                 Default: 3.
+                                 Increase to suppress noise at the cost of
+                                 missing small obstacles. Decrease to detect
+                                 smaller objects.
+
+  publish_rate         (float)  Rate (Hz) at which obstacle detections are
+                                 published. Default: 10.0.
+                                 The node caches the latest scan and processes
+                                 it on the timer, so the actual output rate is
+                                 min(publish_rate, scan_rate).
+
+  map_occupied_thresh  (int)    OccupancyGrid cell value at or above which a
+                                 cell is considered occupied (wall).
+                                 Default: 50.
+                                 The standard ROS convention is 0 = free,
+                                 100 = occupied, -1 = unknown. Points landing
+                                 on cells >= this threshold are discarded.
+
+SUBSCRIPTIONS
+
+  /scan_filtered  (LaserScan)                  Filtered lidar data (from
+                                                car_filter node). Points near
+                                                known cars already removed.
+
+  amcl_pose       (PoseWithCovarianceStamped)  This car's localization, used
+                                                to project scan points into
+                                                the map frame.
+
+  /map            (OccupancyGrid)              Static map used to filter out
+                                                known walls and barriers.
+                                                Subscribed with TRANSIENT_LOCAL
+                                                durability so the latched map
+                                                is received on startup.
+
+PUBLICATIONS
+
+  /obstacles      (PoseArray)   Centroid positions of detected novel obstacle
+                                 clusters, in the map frame. Consumed by the
+                                 websocket_client_node and forwarded to other
+                                 cars via the WebSocket server.
+
+STEP-BY-STEP
+
+  1. Make sure the navigation stack is running and the initial pose is set
+     in RViz2 (AMCL must be publishing amcl_pose).
+
+  2. Make sure car_filter is running (so /scan_filtered is available).
+
+  3. Start the obstacle detector:
+       ros2 run multiagent_driving obstacle_detector
+
+  4. You should see:
+       [INFO] [obstacle_detector_node]: Static map received (384x384, res=0.050m)
+       [INFO] [obstacle_detector_node]: Obstacle detector active — ...
+
+  5. Verify obstacles are being detected:
+       ros2 topic echo /obstacles
+
+  6. Place a novel object (e.g., a box) on the track in front of the car's
+     lidar. You should see poses appear on /obstacles corresponding to the
+     object's position.
+
+  7. To visualize in RViz2, add a PoseArray display on the /obstacles topic.
+
+TROUBLESHOOTING
+
+  /obstacles is always empty
+    - No novel obstacles are visible to the lidar. Only objects that are NOT
+      in the static map are published. Walls and barriers are filtered out.
+    - Place a new object on the track to test.
+    - Check that /scan_filtered is being published:
+        ros2 topic hz /scan_filtered
+    - Check that amcl_pose is being published (initial pose must be set).
+
+  Walls are being published as obstacles
+    - The static map may not match the current environment. Rebuild the map
+      with SLAM if the environment has changed significantly.
+    - Try increasing map_occupied_thresh if the map has low-confidence cells.
+
+  Too many false detections (noise)
+    - Increase min_cluster_size (e.g., 5 or 8) to require more scan points
+      before reporting an obstacle.
+    - Decrease cluster_distance to avoid merging noise with real detections.
+
+  Obstacles are split into multiple detections
+    - Increase cluster_distance (e.g., 0.5) so nearby points are grouped
+      into a single cluster.
+
+  Other cars do not see shared obstacles
+    - Make sure websocket_client is running and connected to the server.
+    - Check that the SwarmLayer plugin is enabled in nav2.yaml.
+    - Verify /swarm_obstacles is being published on the other car:
+        ros2 topic echo /swarm_obstacles
+
+
+================================================================================
   MULTI-CAR WORKFLOW SUMMARY
 ================================================================================
 
@@ -541,10 +714,13 @@ TROUBLESHOOTING
   # 5. Start the car filter on every car (prevents double-counting)
   ros2 run multiagent_driving car_filter
 
-  # 6. Start autonomous driving on every car (hold R1 on controller)
+  # 6. Start the obstacle detector on every car (shares novel obstacles)
+  ros2 run multiagent_driving obstacle_detector
+
+  # 7. Start autonomous driving on every car (hold R1 on controller)
   ros2 run multiagent_driving track_navigator
 
-  # 7. Ctrl-C to stop
+  # 8. Ctrl-C to stop
 
 
 ================================================================================
