@@ -10,6 +10,11 @@ Usage:
 
   # Server only (just the websocket relay):
   ros2 launch multiagent_driving multiagent.launch.py mode:=server
+
+  # With metrics logging (works in any mode):
+  ros2 launch multiagent_driving multiagent.launch.py log_metrics:=true
+  ros2 launch multiagent_driving multiagent.launch.py log_metrics:=true \
+    metrics_output_file:=/tmp/baseline_run1.csv
 """
 
 from launch import LaunchDescription
@@ -43,11 +48,25 @@ def generate_launch_description():
         'car_radius', default_value='0.25',
         description='Radius around known cars to filter from lidar')
 
+    log_metrics_arg = DeclareLaunchArgument(
+        'log_metrics', default_value='false',
+        description='Set to "true" to launch the metrics_logger node')
+
+    metrics_output_file_arg = DeclareLaunchArgument(
+        'metrics_output_file', default_value='',
+        description='CSV output path for metrics_logger. '
+                    'Empty string = auto-generate in /tmp')
+
+    near_miss_threshold_arg = DeclareLaunchArgument(
+        'near_miss_threshold', default_value='0.35',
+        description='Scan range (m) that triggers a near-miss event in the metrics logger')
+
     # ---------- substitutions ----------
     mode = LaunchConfiguration('mode')
     is_multi = PythonExpression(["'", mode, "' == 'multi'"])
     is_server = PythonExpression(["'", mode, "' == 'server'"])
     is_not_server = PythonExpression(["'", mode, "' != 'server'"])
+    is_logging = LaunchConfiguration('log_metrics')
 
     # ---------- nodes ----------
     websocket_server_node = Node(
@@ -103,12 +122,28 @@ def generate_launch_description():
         ],
     )
 
+    metrics_logger_node = Node(
+        package='multiagent_driving',
+        executable='metrics_logger',
+        name='metrics_logger',
+        output='screen',
+        parameters=[{
+            'near_miss_threshold': LaunchConfiguration('near_miss_threshold'),
+            'output_file': LaunchConfiguration('metrics_output_file'),
+        }],
+        condition=IfCondition(is_logging),
+    )
+
     return LaunchDescription([
         mode_arg,
         server_ip_arg,
         server_port_arg,
         namespace_arg,
         car_radius_arg,
+        log_metrics_arg,
+        metrics_output_file_arg,
+        near_miss_threshold_arg,
         websocket_server_node,
         car_nodes,
+        metrics_logger_node,
     ])

@@ -73,13 +73,23 @@ void SwarmLayer::updateCosts(
   std::lock_guard<std::mutex> lock(mutex_);
   if (last_poses_.poses.empty() && last_obstacles_.poses.empty()) return;
 
+  const int grid_w = static_cast<int>(master_grid.getSizeInCellsX());
+  const int grid_h = static_cast<int>(master_grid.getSizeInCellsY());
+
   // Mark other cars as lethal obstacles (3x3 box for car size)
   for (const auto & pose : last_poses_.poses) {
     unsigned int mx, my;
     if (master_grid.worldToMap(pose.position.x, pose.position.y, mx, my)) {
       for (int i = -1; i <= 1; i++) {
         for (int j = -1; j <= 1; j++) {
-          master_grid.setCost(mx + i, my + j, nav2_costmap_2d::LETHAL_OBSTACLE);
+          int cx = static_cast<int>(mx) + i;
+          int cy = static_cast<int>(my) + j;
+          if (cx >= 0 && cx < grid_w && cy >= 0 && cy < grid_h) {
+            master_grid.setCost(
+              static_cast<unsigned int>(cx),
+              static_cast<unsigned int>(cy),
+              nav2_costmap_2d::LETHAL_OBSTACLE);
+          }
         }
       }
     }

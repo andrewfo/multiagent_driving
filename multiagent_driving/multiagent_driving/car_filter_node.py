@@ -21,6 +21,7 @@ car_radius : float – radius around each car centre to filter (default: 0.25 m)
 
 import math
 import threading
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -44,6 +45,9 @@ class CarFilterNode(Node):
         self._robot_y = 0.0
         self._robot_yaw = 0.0
         self._have_pose = False
+        self._last_poses_time: float = 0.0   # monotonic time of last /swarm_poses msg
+        self._scans_filtered = 0             # points suppressed in the last report window
+        self._scans_processed = 0            # scans processed in the last report window
 
         # --- TF -----------------------------------------------------------
         self._tf_buffer = tf2_ros.Buffer()
@@ -67,6 +71,9 @@ class CarFilterNode(Node):
 
         # --- Publisher ----------------------------------------------------
         self.scan_pub = self.create_publisher(LaserScan, "/scan_filtered", sensor_qos)
+
+        # --- Diagnostic timer (every 5 s) ---------------------------------
+        self.create_timer(5.0, self._diagnostic_cb)
 
         self.get_logger().info(
             f"Car filter active — removing scan points within "
@@ -95,6 +102,7 @@ class CarFilterNode(Node):
         ]
         with self._lock:
             self._car_positions = positions
+            self._last_poses_time = time.monotonic()
 
     def _scan_cb(self, msg: LaserScan):
         """Filter scan points near known cars and republish."""
@@ -102,6 +110,7 @@ class CarFilterNode(Node):
             cars = self._car_positions
             if not cars or not self._have_pose:
                 # Nothing to filter — pass through unchanged
+                self._scans_processed += 1
                 self.scan_pub.publish(msg)
                 return
             robot_x = self._robot_x
@@ -114,6 +123,7 @@ class CarFilterNode(Node):
 
         filtered_ranges = list(msg.ranges)
         angle = msg.angle_min
+        points_suppressed = 0
 
         for i in range(len(filtered_ranges)):
             r = filtered_ranges[i]
@@ -135,9 +145,14 @@ class CarFilterNode(Node):
                     # Replace with max range so obstacle layer ignores it
                     # (and raytracing still clears the space behind)
                     filtered_ranges[i] = msg.range_max + 1.0
+                    points_suppressed += 1
                     break
 
             angle += msg.angle_increment
+
+        with self._lock:
+            self._scans_filtered += points_suppressed
+            self._scans_processed += 1
 
         # Publish filtered scan with same header/metadata
         out = LaserScan()
@@ -152,6 +167,35 @@ class CarFilterNode(Node):
         out.ranges = filtered_ranges
         out.intensities = list(msg.intensities) if msg.intensities else []
         self.scan_pub.publish(out)
+
+
+    def _diagnostic_cb(self):
+        """Periodic health check: warn if swarm_poses is absent or stale."""
+        with self._lock:
+            cars = list(self._car_positions)
+            last_t = self._last_poses_time
+            suppressed = self._scans_filtered
+            processed = self._scans_processed
+            self._scans_filtered = 0
+            self._scans_processed = 0
+
+        age = time.monotonic() - last_t if last_t > 0.0 else float("inf")
+
+        if last_t == 0.0:
+            self.get_logger().warn(
+                "No /swarm_poses received yet — scan is passing through unfiltered. "
+                "Check that websocket_client_node is running and connected."
+            )
+        elif age > 3.0:
+            self.get_logger().warn(
+                f"/swarm_poses last received {age:.1f}s ago (>3s stale) — "
+                "filtering is disabled. WebSocket may be disconnected."
+            )
+        else:
+            self.get_logger().info(
+                f"car_filter OK | neighbors={len(cars)} | "
+                f"scans={processed} | points_suppressed={suppressed}"
+            )
 
 
 def _quaternion_to_yaw(x, y, z, w) -> float:

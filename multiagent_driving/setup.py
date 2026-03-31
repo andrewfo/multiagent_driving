@@ -36,6 +36,7 @@ setup(
             'car_filter = multiagent_driving.car_filter_node:main',
             'obstacle_detector = multiagent_driving.obstacle_detector_node:main',
             'sim_world = multiagent_driving.sim_world:main',
+            'metrics_logger = multiagent_driving.metrics_logger_node:main',
         ],
     },
 )

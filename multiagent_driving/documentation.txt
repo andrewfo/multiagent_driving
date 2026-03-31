@@ -1,7 +1,7 @@
 ================================================================================
   multiagent_driving - Documentation
   Scripts: set_waypoints, track_navigator, websocket_server, websocket_client,
-           car_filter & obstacle_detector
+           car_filter, obstacle_detector & metrics_logger
 ================================================================================
 
 This package contains ROS 2 scripts for autonomous lap driving on a physical
@@ -696,6 +696,141 @@ TROUBLESHOOTING
 
 
 ================================================================================
+  SCRIPT 7: metrics_logger
+================================================================================
+
+PURPOSE
+  Records collision-avoidance experiment metrics to a CSV file for post-run
+  analysis. Designed to be run alongside track_navigator during Phase C
+  experiments, comparing the swarm-comms system against a baseline.
+
+  Three classes of safety events are logged:
+    - near_miss:       Minimum lidar range dropped below near_miss_threshold.
+                       Indicates a close encounter with a wall or object.
+    - collision_proxy: Minimum lidar range dropped below collision_threshold.
+                       Strong indicator of a physical collision (car physically
+                       fit within ~0.2 m of an object).
+    - lap_start /      The car entered the lap-start trigger zone. Used to
+      lap_complete:    measure per-lap travel time.
+
+HOW IT WORKS
+  - Subscribes to /scan (raw LaserScan, before car_filter) so it captures all
+    proximity events including to other cars.
+  - Subscribes to amcl_pose to track the car's position for CSV context and
+    for lap-boundary detection.
+  - On each scan, computes the minimum valid range. If it falls below either
+    threshold, writes a row to the CSV immediately.
+  - Detects lap completion by monitoring proximity to a configurable trigger
+    point (default: waypoint 0 at (-0.3, -0.25)). Each entry into the trigger
+    zone counts as one lap crossing; a debounce prevents double-counting.
+  - Every 10 seconds, logs a summary line with lap count and event totals.
+
+USAGE
+
+  Via launch file (recommended — works in any mode):
+
+    # Baseline run (single car, no comms)
+    ros2 launch multiagent_driving multiagent.launch.py \
+      mode:=single log_metrics:=true \
+      metrics_output_file:=/tmp/baseline_run1.csv
+
+    # Swarm run (multi car, comms enabled)
+    ros2 launch multiagent_driving multiagent.launch.py \
+      mode:=multi server_ip:=<SERVER_IP> log_metrics:=true \
+      metrics_output_file:=/tmp/swarm_run1.csv
+
+  Standalone:
+
+    ros2 run multiagent_driving metrics_logger \
+      --ros-args -p output_file:=/tmp/run1.csv
+
+ROS PARAMETERS
+
+  near_miss_threshold  (float)  Min scan range (m) to log a near_miss event.
+                                 Default: 0.35 m.
+
+  collision_threshold  (float)  Min scan range (m) to log a collision_proxy
+                                 event. Default: 0.20 m.
+
+  lap_start_x          (float)  x coordinate of the lap-start trigger point
+                                 in the map frame. Default: -0.3 (waypoint 0).
+
+  lap_start_y          (float)  y coordinate of the lap-start trigger point.
+                                 Default: -0.25 (waypoint 0).
+
+  lap_trigger_radius   (float)  The car must come within this distance of the
+                                 trigger point to count a lap. Default: 0.5 m.
+
+  output_file          (string) Full path for the CSV output. If empty, a
+                                 timestamped file is auto-created in /tmp.
+
+SUBSCRIPTIONS
+
+  /scan      (LaserScan)                  Raw lidar. Used for proximity events.
+  amcl_pose  (PoseWithCovarianceStamped)  Car position for lap detection
+                                           and CSV context columns.
+
+CSV FORMAT
+
+  timestamp_sec, event_type, value, car_x, car_y
+
+  timestamp_sec  ROS clock time of the event (float, seconds).
+  event_type     One of: near_miss | collision_proxy | lap_start | lap_complete
+  value          near_miss/collision_proxy: min scan range (m).
+                 lap_start: lap number (int).
+                 lap_complete: lap duration in seconds (float).
+  car_x / car_y  AMCL position at event time.
+
+  Example rows:
+    1743200100.123, near_miss,       0.3201, 2.145, -1.832
+    1743200112.445, collision_proxy, 0.1874, 2.150, -1.830
+    1743200145.002, lap_start,       2.0000, -0.291, -0.248
+    1743200145.003, lap_complete,    47.231, -0.291, -0.248
+
+STEP-BY-STEP
+
+  1. Decide on experiment condition: single (baseline) or multi (swarm).
+
+  2. Launch with log_metrics:=true and a unique output_file per run:
+       ros2 launch multiagent_driving multiagent.launch.py \
+         mode:=single log_metrics:=true \
+         metrics_output_file:=/tmp/baseline_run1.csv
+
+  3. Set initial pose in RViz2 on all participating cars.
+
+  4. Start autonomous driving and let the cars complete several laps.
+
+  5. Ctrl-C to stop. The CSV is flushed to disk on every event so no data is
+     lost if the run is interrupted.
+
+  6. Copy the CSV off the car:
+       scp roboracer@<CAR_IP>:/tmp/baseline_run1.csv ./data/
+
+  7. Analyze with any CSV tool. Key comparisons:
+       - Count of near_miss rows: baseline vs swarm
+       - Count of collision_proxy rows: baseline vs swarm
+       - Mean/std of lap_complete values: baseline vs swarm
+
+TROUBLESHOOTING
+
+  CSV file is empty after run
+    - Check that /scan is being published: ros2 topic hz /scan
+    - Check that amcl_pose is being published (initial pose must be set).
+    - Check the node is running: ros2 node list | grep metrics_logger
+
+  Lap count is wrong or laps are double-counted
+    - The trigger zone radius (lap_trigger_radius) may be too large, causing
+      multiple triggers per crossing. Decrease it (e.g., 0.3 m).
+    - The trigger point (lap_start_x/y) should match the car's actual start
+      position on the track.
+
+  near_miss events fire constantly (high noise)
+    - Increase near_miss_threshold slightly (e.g., 0.40 m) if the track walls
+      are closer than expected.
+    - Check that /scan is the raw scan, not /scan_filtered.
+
+
+================================================================================
   MULTI-CAR WORKFLOW SUMMARY
 ================================================================================
 
@@ -720,7 +855,11 @@ TROUBLESHOOTING
   # 7. Start autonomous driving on every car (hold R1 on controller)
   ros2 run multiagent_driving track_navigator
 
-  # 8. Ctrl-C to stop
+  # 8. (optional) Log experiment metrics
+  ros2 run multiagent_driving metrics_logger \
+    --ros-args -p output_file:=/tmp/swarm_run1.csv
+
+  # 9. Ctrl-C to stop. Collect CSVs with: scp roboracer@<IP>:/tmp/*.csv ./data/
 
 
 ================================================================================
@@ -741,7 +880,9 @@ TROUBLESHOOTING
   colcon build --packages-select multiagent_driving
   source install/setup.bash
 
-  # 5. Run autonomous laps (hold R1 on controller)
-  ros2 run multiagent_driving track_navigator
+  # 5. Run autonomous laps with metrics logging (hold R1 on controller)
+  ros2 launch multiagent_driving multiagent.launch.py \
+    mode:=single log_metrics:=true \
+    metrics_output_file:=/tmp/baseline_run1.csv
 
-  # 6. Ctrl-C to stop
+  # 6. Ctrl-C to stop. Collect CSV with: scp roboracer@<IP>:/tmp/baseline_run1.csv ./data/
