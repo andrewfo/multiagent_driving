@@ -16,7 +16,8 @@ Publications
 
 Parameters
 ----------
-car_radius : float – radius around each car centre to filter (default: 0.25 m)
+car_margin : float – buffer added to each side of the car OBB (default: 0.05 m)
+            Effective filter box is (0.3 + 2×margin) × (0.09 + 2×margin).
 """
 
 import math
@@ -31,16 +32,33 @@ from sensor_msgs.msg import LaserScan
 import tf2_ros
 
 
+
+# Real car footprint half-extents (matches nav2.yaml)
+_CAR_HALF_LEN = 0.15   # 0.3 m / 2
+_CAR_HALF_WID = 0.045  # 0.09 m / 2
+
+
+def _point_in_obb(px: float, py: float,
+                  cx: float, cy: float, yaw: float,
+                  half_len: float, half_wid: float) -> bool:
+    """Return True if world-frame point (px, py) is inside the oriented bounding box."""
+    dx = px - cx
+    dy = py - cy
+    local_x = dx * math.cos(yaw) + dy * math.sin(yaw)
+    local_y = -dx * math.sin(yaw) + dy * math.cos(yaw)
+    return abs(local_x) <= half_len and abs(local_y) <= half_wid
+
+
 class CarFilterNode(Node):
     def __init__(self):
         super().__init__("car_filter_node")
 
-        self.declare_parameter("car_radius", 0.25)
-        self.car_radius = self.get_parameter("car_radius").value
+        self.declare_parameter("car_margin", 0.05)
+        self.car_margin = self.get_parameter("car_margin").value
 
         # --- State --------------------------------------------------------
         self._lock = threading.Lock()
-        self._car_positions: list[tuple[float, float]] = []  # (x, y) in map frame
+        self._car_poses: list[tuple[float, float, float]] = []  # (x, y, yaw) map frame
         self._robot_x = 0.0
         self._robot_y = 0.0
         self._robot_yaw = 0.0
@@ -76,8 +94,8 @@ class CarFilterNode(Node):
         self.create_timer(5.0, self._diagnostic_cb)
 
         self.get_logger().info(
-            f"Car filter active — removing scan points within "
-            f"{self.car_radius:.2f} m of known cars"
+            f"Car filter active — suppressing OBB scan points "
+            f"(margin={self.car_margin:.3f} m)"
         )
 
     # ---------------------------------------------------------- callbacks
@@ -96,18 +114,21 @@ class CarFilterNode(Node):
             self._have_pose = True
 
     def _swarm_cb(self, msg: PoseArray):
-        """Cache known car positions in map frame."""
-        positions = [
-            (p.position.x, p.position.y) for p in msg.poses
+        """Cache known car poses (x, y, yaw) in map frame."""
+        poses = [
+            (p.position.x, p.position.y,
+             _quaternion_to_yaw(p.orientation.x, p.orientation.y,
+                                p.orientation.z, p.orientation.w))
+            for p in msg.poses
         ]
         with self._lock:
-            self._car_positions = positions
+            self._car_poses = poses
             self._last_poses_time = time.monotonic()
 
     def _scan_cb(self, msg: LaserScan):
         """Filter scan points near known cars and republish."""
         with self._lock:
-            cars = self._car_positions
+            cars = self._car_poses
             if not cars or not self._have_pose:
                 # Nothing to filter — pass through unchanged
                 self._scans_processed += 1
@@ -117,7 +138,9 @@ class CarFilterNode(Node):
             robot_y = self._robot_y
             robot_yaw = self._robot_yaw
 
-        radius_sq = self.car_radius ** 2
+        # OBB half-extents with configured margin on each side
+        hl = _CAR_HALF_LEN + self.car_margin
+        hw = _CAR_HALF_WID + self.car_margin
         cos_yaw = math.cos(robot_yaw)
         sin_yaw = math.sin(robot_yaw)
 
@@ -137,13 +160,11 @@ class CarFilterNode(Node):
             map_x = robot_x + cos_yaw * local_x - sin_yaw * local_y
             map_y = robot_y + sin_yaw * local_x + cos_yaw * local_y
 
-            # Check against each known car position
-            for cx, cy in cars:
-                dx = map_x - cx
-                dy = map_y - cy
-                if dx * dx + dy * dy < radius_sq:
+            # Check against each known car OBB (x, y, yaw)
+            for cx, cy, cyaw in cars:
+                if _point_in_obb(map_x, map_y, cx, cy, cyaw, hl, hw):
                     # Replace with max range so obstacle layer ignores it
-                    # (and raytracing still clears the space behind)
+                    # (raytracing still clears the space behind)
                     filtered_ranges[i] = msg.range_max + 1.0
                     points_suppressed += 1
                     break
@@ -172,7 +193,7 @@ class CarFilterNode(Node):
     def _diagnostic_cb(self):
         """Periodic health check: warn if swarm_poses is absent or stale."""
         with self._lock:
-            cars = list(self._car_positions)
+            cars = list(self._car_poses)
             last_t = self._last_poses_time
             suppressed = self._scans_filtered
             processed = self._scans_processed

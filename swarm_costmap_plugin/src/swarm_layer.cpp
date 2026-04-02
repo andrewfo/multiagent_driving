@@ -1,6 +1,7 @@
 #include "swarm_costmap_plugin/swarm_layer.hpp"
 #include "nav2_costmap_2d/costmap_math.hpp"
 #include "pluginlib/class_list_macros.hpp"
+#include <cmath>
 
 // Register the plugin with pluginlib
 PLUGINLIB_EXPORT_CLASS(swarm_costmap_plugin::SwarmLayer, nav2_costmap_2d::Layer)
@@ -76,20 +77,53 @@ void SwarmLayer::updateCosts(
   const int grid_w = static_cast<int>(master_grid.getSizeInCellsX());
   const int grid_h = static_cast<int>(master_grid.getSizeInCellsY());
 
-  // Mark other cars as lethal obstacles (3x3 box for car size)
+  // Stamp oriented rectangular footprint matching the real car (0.3m × 0.09m)
+  // rotated by each car's yaw extracted from the PoseArray quaternion.
+  const double res     = master_grid.getResolution();
+  const double orig_x  = master_grid.getOriginX();
+  const double orig_y  = master_grid.getOriginY();
+
+  // Half-extents matching nav2.yaml footprint: [[0.15,0.045],…]
+  constexpr double half_len = 0.15;   // 0.3 m / 2
+  constexpr double half_wid = 0.045;  // 0.09 m / 2
+
   for (const auto & pose : last_poses_.poses) {
-    unsigned int mx, my;
-    if (master_grid.worldToMap(pose.position.x, pose.position.y, mx, my)) {
-      for (int i = -1; i <= 1; i++) {
-        for (int j = -1; j <= 1; j++) {
-          int cx = static_cast<int>(mx) + i;
-          int cy = static_cast<int>(my) + j;
-          if (cx >= 0 && cx < grid_w && cy >= 0 && cy < grid_h) {
-            master_grid.setCost(
-              static_cast<unsigned int>(cx),
-              static_cast<unsigned int>(cy),
-              nav2_costmap_2d::LETHAL_OBSTACLE);
-          }
+    const double cx  = pose.position.x;
+    const double cy  = pose.position.y;
+    // Extract yaw from quaternion (2D: only z and w are non-zero)
+    const double qz  = pose.orientation.z;
+    const double qw  = pose.orientation.w;
+    const double yaw = 2.0 * std::atan2(qz, qw);
+    const double cos_y = std::cos(yaw);
+    const double sin_y = std::sin(yaw);
+
+    // AABB of the rotated box uses its diagonal as a conservative radius
+    const double diag = std::hypot(half_len, half_wid);
+    const int gx_min = std::max(min_i,
+      static_cast<int>(std::floor((cx - diag - orig_x) / res)));
+    const int gx_max = std::min(max_i - 1,
+      static_cast<int>(std::ceil( (cx + diag - orig_x) / res)));
+    const int gy_min = std::max(min_j,
+      static_cast<int>(std::floor((cy - diag - orig_y) / res)));
+    const int gy_max = std::min(max_j - 1,
+      static_cast<int>(std::ceil( (cy + diag - orig_y) / res)));
+
+    for (int gx = gx_min; gx <= gx_max; ++gx) {
+      for (int gy = gy_min; gy <= gy_max; ++gy) {
+        if (gx < 0 || gx >= grid_w || gy < 0 || gy >= grid_h) continue;
+        // Cell centre in world coords
+        const double wx = orig_x + (gx + 0.5) * res;
+        const double wy = orig_y + (gy + 0.5) * res;
+        // Rotate into car-local frame and test OBB membership
+        const double dx = wx - cx;
+        const double dy = wy - cy;
+        const double lx =  dx * cos_y + dy * sin_y;
+        const double ly = -dx * sin_y + dy * cos_y;
+        if (std::abs(lx) <= half_len && std::abs(ly) <= half_wid) {
+          master_grid.setCost(
+            static_cast<unsigned int>(gx),
+            static_cast<unsigned int>(gy),
+            nav2_costmap_2d::LETHAL_OBSTACLE);
         }
       }
     }
