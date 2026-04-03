@@ -5,7 +5,9 @@
 #include "nav2_costmap_2d/layer.hpp"
 #include "nav2_costmap_2d/layered_costmap.hpp"
 #include "geometry_msgs/msg/pose_array.hpp"
+#include "tf2_geometry_msgs/tf2_geometry_msgs.hpp"
 #include <mutex>
+#include <vector>
 
 namespace swarm_costmap_plugin
 {
@@ -28,6 +30,8 @@ public:
 private:
   void poseCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
   void obstacleCallback(const geometry_msgs::msg::PoseArray::SharedPtr msg);
+  std::vector<geometry_msgs::msg::Pose> transformPoses(
+    const geometry_msgs::msg::PoseArray & pose_array);
 
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr sub_;
   rclcpp::Subscription<geometry_msgs::msg::PoseArray>::SharedPtr obstacle_sub_;

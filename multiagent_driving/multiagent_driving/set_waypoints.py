@@ -26,9 +26,33 @@ from rclpy.node import Node
 from geometry_msgs.msg import PoseWithCovarianceStamped
 
 
-TRACK_NAV_PATH = os.path.join(
-    os.path.dirname(__file__), 'track_navigator.py'
-)
+def _find_track_navigator() -> str:
+    """
+    Return the path to track_navigator.py in the *source* tree.
+
+    When the node is launched with ``ros2 run``, __file__ points to the
+    install tree (install/<pkg>/lib/python*/site-packages/<pkg>/…).
+    Writing there is useless because colcon overwrites it on the next build.
+    Instead, walk up from __file__ to the workspace root and resolve the
+    corresponding src/ path.
+    """
+    real = os.path.realpath(__file__)
+    parts = real.split(os.sep)
+    if 'install' in parts:
+        install_idx = parts.index('install')
+        ws_root = os.sep.join(parts[:install_idx])
+        pkg_name = parts[install_idx + 1]          # e.g. 'multiagent_driving'
+        # src/<pkg>/<pkg>/<pkg>/track_navigator.py
+        src_path = os.path.join(
+            ws_root, 'src', pkg_name, pkg_name, pkg_name, 'track_navigator.py'
+        )
+        if os.path.isfile(src_path):
+            return src_path
+    # Running directly from source — sibling file is correct
+    return os.path.join(os.path.dirname(real), 'track_navigator.py')
+
+
+TRACK_NAV_PATH = _find_track_navigator()
 
 
 class WaypointRecorder(Node):

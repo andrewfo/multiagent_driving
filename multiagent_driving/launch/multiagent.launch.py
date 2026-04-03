@@ -45,8 +45,8 @@ def generate_launch_description():
         description='ROS namespace for this car (e.g. /car1)')
 
     car_radius_arg = DeclareLaunchArgument(
-        'car_radius', default_value='0.25',
-        description='Radius around known cars to filter from lidar')
+        'car_margin', default_value='0.05',
+        description='Margin added to each side of the car OBB for lidar filtering (m)')
 
     log_metrics_arg = DeclareLaunchArgument(
         'log_metrics', default_value='false',
@@ -108,7 +108,7 @@ def generate_launch_description():
                 name='car_filter',
                 output='screen',
                 parameters=[{
-                    'car_radius': LaunchConfiguration('car_radius'),
+                    'car_margin': LaunchConfiguration('car_margin'),
                 }],
                 condition=IfCondition(is_multi),
             ),

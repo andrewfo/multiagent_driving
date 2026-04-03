@@ -43,15 +43,53 @@ void SwarmLayer::obstacleCallback(const geometry_msgs::msg::PoseArray::SharedPtr
   last_obstacles_ = *msg;
 }
 
+std::vector<geometry_msgs::msg::Pose> SwarmLayer::transformPoses(
+  const geometry_msgs::msg::PoseArray & pose_array)
+{
+  const std::string & target_frame = layered_costmap_->getGlobalFrameID();
+  const std::string source_frame =
+    pose_array.header.frame_id.empty() ? "map" : pose_array.header.frame_id;
+
+  std::vector<geometry_msgs::msg::Pose> result;
+  result.reserve(pose_array.poses.size());
+
+  if (source_frame == target_frame || !tf_) {
+    result = pose_array.poses;
+    return result;
+  }
+
+  for (const auto & pose : pose_array.poses) {
+    geometry_msgs::msg::PoseStamped in_ps, out_ps;
+    in_ps.header.frame_id = source_frame;
+    in_ps.header.stamp = rclcpp::Time(0);  // latest available transform
+    in_ps.pose = pose;
+    try {
+      tf_->transform(in_ps, out_ps, target_frame, tf2::durationFromSec(0.1));
+      result.push_back(out_ps.pose);
+    } catch (const tf2::TransformException &) {
+      result.push_back(pose);  // fall back to untransformed
+    }
+  }
+  return result;
+}
+
 void SwarmLayer::updateBounds(
   double /*robot_x*/, double /*robot_y*/, double /*robot_yaw*/, double * min_x,
   double * min_y, double * max_x, double * max_y)
 {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (last_poses_.poses.empty() && last_obstacles_.poses.empty()) return;
+  geometry_msgs::msg::PoseArray poses_copy, obstacles_copy;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (last_poses_.poses.empty() && last_obstacles_.poses.empty()) return;
+    poses_copy = last_poses_;
+    obstacles_copy = last_obstacles_;
+  }
+
+  const auto poses = transformPoses(poses_copy);
+  const auto obstacles = transformPoses(obstacles_copy);
 
   // Expand bounds around other cars
-  for (const auto & pose : last_poses_.poses) {
+  for (const auto & pose : poses) {
     *min_x = std::min(*min_x, pose.position.x - 0.5);
     *min_y = std::min(*min_y, pose.position.y - 0.5);
     *max_x = std::max(*max_x, pose.position.x + 0.5);
@@ -59,7 +97,7 @@ void SwarmLayer::updateBounds(
   }
 
   // Expand bounds around shared obstacles
-  for (const auto & pose : last_obstacles_.poses) {
+  for (const auto & pose : obstacles) {
     *min_x = std::min(*min_x, pose.position.x - 0.5);
     *min_y = std::min(*min_y, pose.position.y - 0.5);
     *max_x = std::max(*max_x, pose.position.x + 0.5);
@@ -71,8 +109,16 @@ void SwarmLayer::updateCosts(
   nav2_costmap_2d::Costmap2D & master_grid,
   int min_i, int min_j, int max_i, int max_j)
 {
-  std::lock_guard<std::mutex> lock(mutex_);
-  if (last_poses_.poses.empty() && last_obstacles_.poses.empty()) return;
+  geometry_msgs::msg::PoseArray poses_copy, obstacles_copy;
+  {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (last_poses_.poses.empty() && last_obstacles_.poses.empty()) return;
+    poses_copy = last_poses_;
+    obstacles_copy = last_obstacles_;
+  }
+
+  const auto transformed_poses = transformPoses(poses_copy);
+  const auto transformed_obstacles = transformPoses(obstacles_copy);
 
   const int grid_w = static_cast<int>(master_grid.getSizeInCellsX());
   const int grid_h = static_cast<int>(master_grid.getSizeInCellsY());
@@ -87,7 +133,7 @@ void SwarmLayer::updateCosts(
   constexpr double half_len = 0.15;   // 0.3 m / 2
   constexpr double half_wid = 0.045;  // 0.09 m / 2
 
-  for (const auto & pose : last_poses_.poses) {
+  for (const auto & pose : transformed_poses) {
     const double cx  = pose.position.x;
     const double cy  = pose.position.y;
     // Extract yaw from quaternion (2D: only z and w are non-zero)
@@ -130,7 +176,7 @@ void SwarmLayer::updateCosts(
   }
 
   // Mark shared obstacles as lethal (single cell per obstacle point)
-  for (const auto & pose : last_obstacles_.poses) {
+  for (const auto & pose : transformed_obstacles) {
     unsigned int mx, my;
     if (master_grid.worldToMap(pose.position.x, pose.position.y, mx, my)) {
       master_grid.setCost(mx, my, nav2_costmap_2d::LETHAL_OBSTACLE);
