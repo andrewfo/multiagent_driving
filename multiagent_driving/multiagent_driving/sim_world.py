@@ -298,9 +298,11 @@ class SimWorld(Node):
         self.create_timer(1.0, self._publish_map_once)
         self._map_published = False
 
+        mode_str = 'MULTI (swarm sharing ON)' if self.enable_swarm else 'BASELINE (swarm sharing OFF)'
         self.get_logger().info(
             f'SimWorld ready: {num_ghosts} ghost cars, '
-            f'ego at ({self.ego_x:.2f}, {self.ego_y:.2f})')
+            f'ego at ({self.ego_x:.2f}, {self.ego_y:.2f}), '
+            f'mode={mode_str}')
 
     # ------------------------------------------------------------------
     # Map loading

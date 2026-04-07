@@ -242,7 +242,7 @@ PROTOCOL
   State message (car -> server -> all peers):
 
     {
-      "car_id":       "car1",           // derived from ROS namespace
+      "car_id":       "car1",           // set via car_id ROS param at launch
       "x":            1.234,            // map-frame position
       "y":            5.678,
       "yaw":          0.7854,           // heading in radians
@@ -338,9 +338,20 @@ HOW IT WORKS
 USAGE
 
     ros2 run multiagent_driving websocket_client \
-      --ros-args -p server_ip:=192.168.1.100 -p server_port:=8765
+      --ros-args -p car_id:=car1 -p server_ip:=192.168.1.100 -p server_port:=8765
+
+  NOTE: Do NOT use -r __ns:=/<name> to distinguish cars. Namespacing causes
+  relative topic names (amcl_pose, /follow_waypoints) to resolve incorrectly.
+  Use the car_id parameter instead.
 
 ROS PARAMETERS
+
+  car_id       (string)  Unique identifier for this car (e.g. "car1", "car2").
+                          Must differ between cars — the server uses it to route
+                          state, and each node filters out messages with its own
+                          car_id to avoid acting on its own broadcasts.
+                          Default: "" (falls back to ROS namespace or
+                          "car_default" — always set this explicitly).
 
   server_ip    (string)  IP address of the WebSocket server.
                           Default: "localhost"
@@ -390,10 +401,9 @@ STEP-BY-STEP
        [INFO] [websocket_client_node]: [car1] Connected to
               ws://192.168.1.100:8765
 
-  5. Repeat on every car. Each car derives its unique ID from its ROS
-     namespace (e.g., /car1 -> "car1"). Set namespaces via:
+  5. Repeat on every car, giving each a unique car_id:
        ros2 run multiagent_driving websocket_client \
-         --ros-args -r __ns:=/car2 -p server_ip:=192.168.1.100
+         --ros-args -p car_id:=car2 -p server_ip:=192.168.1.100
 
   6. Verify that /swarm_poses is being published:
        ros2 topic echo /swarm_poses
@@ -842,9 +852,12 @@ TROUBLESHOOTING
   # 3. Start the WebSocket server on one machine
   ros2 run multiagent_driving websocket_server
 
-  # 4. Start the WebSocket client on every car
+  # 4. Start the WebSocket client on every car (use a unique car_id per car)
   ros2 run multiagent_driving websocket_client \
-    --ros-args -r __ns:=/car1 -p server_ip:=<SERVER_IP>
+    --ros-args -p car_id:=car1 -p server_ip:=<SERVER_IP>
+  # On the second car:
+  # ros2 run multiagent_driving websocket_client \
+  #   --ros-args -p car_id:=car2 -p server_ip:=<SERVER_IP>
 
   # 5. Start the car filter on every car (prevents double-counting)
   ros2 run multiagent_driving car_filter
