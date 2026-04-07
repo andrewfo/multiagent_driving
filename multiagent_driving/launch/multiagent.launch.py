@@ -54,7 +54,7 @@ AMCL's absolute /amcl_pose topic. Use car_id instead.
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction
+from launch.actions import DeclareLaunchArgument, ExecuteProcess, GroupAction
 from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
@@ -112,10 +112,8 @@ def generate_launch_description():
     is_logging = LaunchConfiguration('log_metrics')
 
     # ---------- nodes ----------
-    websocket_server_node = Node(
-        package='multiagent_driving',
-        executable='websocket_server',
-        name='websocket_server',
+    websocket_server_node = ExecuteProcess(
+        cmd=['ros2', 'run', 'multiagent_driving', 'websocket_server'],
         output='screen',
         condition=IfCondition(is_server),
     )

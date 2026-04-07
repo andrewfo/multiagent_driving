@@ -124,7 +124,7 @@ def main():
     parser = argparse.ArgumentParser(description="Multi-agent WebSocket relay server")
     parser.add_argument("--host", default="0.0.0.0", help="Bind address (default: 0.0.0.0)")
     parser.add_argument("--port", type=int, default=8765, help="Port (default: 8765)")
-    args = parser.parse_args()
+    args, _ = parser.parse_known_args()
 
     asyncio.run(run_server(args.host, args.port))
 
