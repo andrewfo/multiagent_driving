@@ -20,6 +20,121 @@ with set_waypoints, then run track_navigator to drive laps autonomously.
 
 
 ================================================================================
+  LAUNCH QUICK-REFERENCE
+================================================================================
+
+Use multiagent.launch.py to start everything on each car. Every car runs one
+command; the mode: argument controls what that car's role is.
+
+--------------------------------------------------------------------------------
+  CAR ROLES AND MODES
+--------------------------------------------------------------------------------
+
+  Mode               Runs                                       When to use
+  -----------------  -----------------------------------------  ---------------
+  multi              navigator + websocket_client + car_filter   Every driving
+                     + obstacle_detector                         car (typical)
+  single             track_navigator only                        Baseline runs
+  server             WebSocket relay server only                 Dedicated laptop
+                                                                 or coordinator
+  server_and_drive   server + full per-car stack                 When no laptop;
+                                                                 one car is both
+                                                                 server & driver
+
+  IMPORTANT:
+    - car_id must be unique per car (car1, car2, car3 ...).
+      The default "car_default" must NOT be used in multi-car experiments.
+    - Start the server BEFORE launching any car in multi or server_and_drive mode.
+    - Never use ROS namespaces (-r __ns:=) to distinguish cars — it breaks
+      relative topic subscriptions (amcl_pose, follow_waypoints).
+    - On every car, the Nav2 navigation stack must already be running and the
+      initial pose set in RViz2 before launching any of the commands below.
+
+--------------------------------------------------------------------------------
+  PRE-LAUNCH (every car, every experiment)
+--------------------------------------------------------------------------------
+
+  # 1. Start the navigation stack:
+  cd ~/roboracer_ws/tmux/navstack/ && MAP=track tmuxinator
+
+  # 2. Set the initial pose in RViz2 (2D Pose Estimate — click and drag).
+
+--------------------------------------------------------------------------------
+  2-CAR EXPERIMENT — laptop hosts the server (recommended)
+--------------------------------------------------------------------------------
+
+  Laptop:
+    ros2 launch multiagent_driving multiagent.launch.py \
+      mode:=server
+
+  Car 1:
+    ros2 launch multiagent_driving multiagent.launch.py \
+      mode:=multi car_id:=car1 server_ip:=<LAPTOP_IP>
+
+  Car 2:
+    ros2 launch multiagent_driving multiagent.launch.py \
+      mode:=multi car_id:=car2 server_ip:=<LAPTOP_IP>
+
+--------------------------------------------------------------------------------
+  3-CAR EXPERIMENT — laptop hosts the server
+--------------------------------------------------------------------------------
+
+  Laptop:   ros2 launch multiagent_driving multiagent.launch.py mode:=server
+
+  Car 1:    ros2 launch multiagent_driving multiagent.launch.py \
+              mode:=multi car_id:=car1 server_ip:=<LAPTOP_IP>
+
+  Car 2:    ros2 launch multiagent_driving multiagent.launch.py \
+              mode:=multi car_id:=car2 server_ip:=<LAPTOP_IP>
+
+  Car 3:    ros2 launch multiagent_driving multiagent.launch.py \
+              mode:=multi car_id:=car3 server_ip:=<LAPTOP_IP>
+
+  To add more cars, repeat the Car N pattern with a new car_id each time.
+
+--------------------------------------------------------------------------------
+  NO LAPTOP — one car acts as server and driver
+--------------------------------------------------------------------------------
+
+  Car 1 (server + driver):
+    ros2 launch multiagent_driving multiagent.launch.py \
+      mode:=server_and_drive car_id:=car1
+
+  Car 2:
+    ros2 launch multiagent_driving multiagent.launch.py \
+      mode:=multi car_id:=car2 server_ip:=<CAR1_IP>
+
+  Car 3 (if present):
+    ros2 launch multiagent_driving multiagent.launch.py \
+      mode:=multi car_id:=car3 server_ip:=<CAR1_IP>
+
+--------------------------------------------------------------------------------
+  SINGLE-CAR BASELINE RUN
+--------------------------------------------------------------------------------
+
+  Car 1 only:
+    ros2 launch multiagent_driving multiagent.launch.py \
+      mode:=single log_metrics:=true \
+      metrics_output_file:=/tmp/baseline_run1.csv
+
+--------------------------------------------------------------------------------
+  ADDING METRICS LOGGING (append to any multi-car command)
+--------------------------------------------------------------------------------
+
+  Append these arguments to any car's launch command to record CSV data:
+
+    log_metrics:=true metrics_output_file:=/tmp/swarm_car1.csv
+
+  Example — Car 1 in a multi-car run with logging:
+    ros2 launch multiagent_driving multiagent.launch.py \
+      mode:=multi car_id:=car1 server_ip:=<LAPTOP_IP> \
+      log_metrics:=true metrics_output_file:=/tmp/swarm_car1.csv
+
+  After the run, collect CSVs from each car:
+    scp roboracer@<CAR_IP>:/tmp/swarm_car1.csv ./data/
+
+
+================================================================================
   PREREQUISITES
 ================================================================================
 

@@ -1,21 +1,52 @@
 """
 Launch all multiagent_driving nodes for one car.
 
-Usage:
-  # Multi-car (default) — give each car a unique car_id:
-  ros2 launch multiagent_driving multiagent.launch.py server_ip:=192.168.1.100 car_id:=car1
-  ros2 launch multiagent_driving multiagent.launch.py server_ip:=192.168.1.100 car_id:=car2
+MODES
+-----
+  multi            Per-car stack only (navigator + websocket_client + car_filter
+                   + obstacle_detector). Use on every driving car when the server
+                   runs elsewhere (laptop or another car).
 
-  # Single-car baseline (no websocket/filter/obstacle nodes):
-  ros2 launch multiagent_driving multiagent.launch.py mode:=single
+  single           track_navigator only. No websocket stack. Use for single-car
+                   baseline experiments.
 
-  # Server only (just the websocket relay):
+  server           WebSocket relay server only. No car nodes. Use on a dedicated
+                   laptop or coordinator machine.
+
+  server_and_drive WebSocket server + full per-car stack. Use when one car must
+                   act as both server and driver (no separate laptop available).
+
+USAGE — 2-car experiment (laptop as server)
+-------------------------------------------
+  # Laptop:
   ros2 launch multiagent_driving multiagent.launch.py mode:=server
 
-  # With metrics logging (works in any mode):
-  ros2 launch multiagent_driving multiagent.launch.py log_metrics:=true
-  ros2 launch multiagent_driving multiagent.launch.py log_metrics:=true \
-    metrics_output_file:=/tmp/multi_run1.csv car_id:=car1
+  # Car 1:
+  ros2 launch multiagent_driving multiagent.launch.py \
+    mode:=multi car_id:=car1 server_ip:=<LAPTOP_IP>
+
+  # Car 2:
+  ros2 launch multiagent_driving multiagent.launch.py \
+    mode:=multi car_id:=car2 server_ip:=<LAPTOP_IP>
+
+USAGE — no laptop (Car 1 hosts server)
+---------------------------------------
+  # Car 1 (server + driver):
+  ros2 launch multiagent_driving multiagent.launch.py \
+    mode:=server_and_drive car_id:=car1
+
+  # Car 2:
+  ros2 launch multiagent_driving multiagent.launch.py \
+    mode:=multi car_id:=car2 server_ip:=<CAR1_IP>
+
+USAGE — single-car baseline
+-----------------------------
+  ros2 launch multiagent_driving multiagent.launch.py \
+    mode:=single log_metrics:=true metrics_output_file:=/tmp/baseline_run1.csv
+
+USAGE — metrics logging (append to any multi-car command)
+----------------------------------------------------------
+  log_metrics:=true metrics_output_file:=/tmp/swarm_car1.csv
 
 NOTE: Do NOT use ROS namespaces to distinguish cars. Namespacing causes
 relative topic subscriptions (amcl_pose) to resolve incorrectly against
@@ -33,9 +64,11 @@ def generate_launch_description():
     # ---------- arguments ----------
     mode_arg = DeclareLaunchArgument(
         'mode', default_value='multi',
-        description='Launch mode: "multi" (all per-car nodes), '
-                    '"single" (track_navigator only), '
-                    '"server" (websocket_server only)')
+        description='Launch mode: '
+                    '"multi" (per-car nodes, server runs elsewhere), '
+                    '"single" (track_navigator only, baseline), '
+                    '"server" (websocket relay only, no car nodes), '
+                    '"server_and_drive" (server + all per-car nodes)')
 
     car_id_arg = DeclareLaunchArgument(
         'car_id', default_value='car_default',
@@ -70,9 +103,12 @@ def generate_launch_description():
 
     # ---------- substitutions ----------
     mode = LaunchConfiguration('mode')
-    is_multi = PythonExpression(["'", mode, "' == 'multi'"])
-    is_server = PythonExpression(["'", mode, "' == 'server'"])
-    is_not_server = PythonExpression(["'", mode, "' != 'server'"])
+    # websocket_server runs for "server" and "server_and_drive"
+    is_server = PythonExpression(["'", mode, "' in ('server', 'server_and_drive')"])
+    # car nodes run for everything except the bare "server" mode
+    is_car = PythonExpression(["'", mode, "' != 'server'"])
+    # websocket_client/car_filter/obstacle_detector run for "multi" and "server_and_drive"
+    is_multi = PythonExpression(["'", mode, "' in ('multi', 'server_and_drive')"])
     is_logging = LaunchConfiguration('log_metrics')
 
     # ---------- nodes ----------
@@ -85,7 +121,7 @@ def generate_launch_description():
     )
 
     car_nodes = GroupAction(
-        condition=IfCondition(is_not_server),
+        condition=IfCondition(is_car),
         actions=[
             # Always launched (single + multi).
             # No PushRosNamespace here — namespacing breaks relative topic
