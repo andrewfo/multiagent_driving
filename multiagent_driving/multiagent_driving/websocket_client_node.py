@@ -48,8 +48,13 @@ class WebsocketClientNode(Node):
         server_port = self.get_parameter("server_port").get_parameter_value().integer_value
         self.ws_url = f"ws://{server_ip}:{server_port}"
 
-        # Car ID derived from namespace (e.g. /car1 -> "car1")
-        self.car_id = self.get_namespace().strip("/") or "car_default"
+        # Car ID: prefer an explicit ROS parameter so identity is set at launch
+        # time without touching namespaces (namespacing breaks relative topic
+        # subscriptions like amcl_pose → /car_a/amcl_pose while AMCL publishes
+        # to /amcl_pose absolute).  Falls back to namespace then "car_default".
+        self.declare_parameter("car_id", "")
+        explicit_id = self.get_parameter("car_id").get_parameter_value().string_value
+        self.car_id = explicit_id or self.get_namespace().strip("/") or "car_default"
 
         # --- Publishers -----------------------------------------------------
         self.swarm_pub = self.create_publisher(PoseArray, "/swarm_poses", 10)

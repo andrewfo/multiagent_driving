@@ -2,10 +2,11 @@
 Launch all multiagent_driving nodes for one car.
 
 Usage:
-  # Multi-car (default):
-  ros2 launch multiagent_driving multiagent.launch.py server_ip:=192.168.1.100 namespace:=/car1
+  # Multi-car (default) — give each car a unique car_id:
+  ros2 launch multiagent_driving multiagent.launch.py server_ip:=192.168.1.100 car_id:=car1
+  ros2 launch multiagent_driving multiagent.launch.py server_ip:=192.168.1.100 car_id:=car2
 
-  # Single-car (no websocket/filter/obstacle nodes):
+  # Single-car baseline (no websocket/filter/obstacle nodes):
   ros2 launch multiagent_driving multiagent.launch.py mode:=single
 
   # Server only (just the websocket relay):
@@ -14,14 +15,18 @@ Usage:
   # With metrics logging (works in any mode):
   ros2 launch multiagent_driving multiagent.launch.py log_metrics:=true
   ros2 launch multiagent_driving multiagent.launch.py log_metrics:=true \
-    metrics_output_file:=/tmp/baseline_run1.csv
+    metrics_output_file:=/tmp/multi_run1.csv car_id:=car1
+
+NOTE: Do NOT use ROS namespaces to distinguish cars. Namespacing causes
+relative topic subscriptions (amcl_pose) to resolve incorrectly against
+AMCL's absolute /amcl_pose topic. Use car_id instead.
 """
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, LogInfo
-from launch.conditions import IfCondition, UnlessCondition
+from launch.actions import DeclareLaunchArgument, GroupAction
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PythonExpression
-from launch_ros.actions import Node, PushRosNamespace
+from launch_ros.actions import Node
 
 
 def generate_launch_description():
@@ -32,6 +37,12 @@ def generate_launch_description():
                     '"single" (track_navigator only), '
                     '"server" (websocket_server only)')
 
+    car_id_arg = DeclareLaunchArgument(
+        'car_id', default_value='car_default',
+        description='Unique identifier for this car (e.g. car1, car2). '
+                    'Must differ between cars — used by the websocket to filter '
+                    'self-messages. Do not use ROS namespaces for this.')
+
     server_ip_arg = DeclareLaunchArgument(
         'server_ip', default_value='localhost',
         description='IP address of the WebSocket server')
@@ -40,11 +51,7 @@ def generate_launch_description():
         'server_port', default_value='8765',
         description='Port of the WebSocket server')
 
-    namespace_arg = DeclareLaunchArgument(
-        'namespace', default_value='',
-        description='ROS namespace for this car (e.g. /car1)')
-
-    car_radius_arg = DeclareLaunchArgument(
+    car_margin_arg = DeclareLaunchArgument(
         'car_margin', default_value='0.05',
         description='Margin added to each side of the car OBB for lidar filtering (m)')
 
@@ -80,9 +87,9 @@ def generate_launch_description():
     car_nodes = GroupAction(
         condition=IfCondition(is_not_server),
         actions=[
-            PushRosNamespace(LaunchConfiguration('namespace')),
-
-            # Always launched (single + multi)
+            # Always launched (single + multi).
+            # No PushRosNamespace here — namespacing breaks relative topic
+            # subscriptions (amcl_pose, follow_waypoints action server).
             Node(
                 package='multiagent_driving',
                 executable='track_navigator',
@@ -97,6 +104,7 @@ def generate_launch_description():
                 name='websocket_client',
                 output='screen',
                 parameters=[{
+                    'car_id': LaunchConfiguration('car_id'),
                     'server_ip': LaunchConfiguration('server_ip'),
                     'server_port': LaunchConfiguration('server_port'),
                 }],
@@ -136,10 +144,10 @@ def generate_launch_description():
 
     return LaunchDescription([
         mode_arg,
+        car_id_arg,
         server_ip_arg,
         server_port_arg,
-        namespace_arg,
-        car_radius_arg,
+        car_margin_arg,
         log_metrics_arg,
         metrics_output_file_arg,
         near_miss_threshold_arg,

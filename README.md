@@ -136,20 +136,32 @@ Set the initial pose in RViz2 (**2D Pose Estimate**, click+drag on the map).
 
 ### Step 3 — Launch all per-car nodes
 
+Run on each car, giving each a **unique `car_id`**:
+
 ```bash
+# Car 1
 ros2 launch multiagent_driving multiagent.launch.py \
   server_ip:=192.168.1.100 \
-  namespace:=/car1
+  car_id:=car1
+
+# Car 2 (on the second car)
+ros2 launch multiagent_driving multiagent.launch.py \
+  server_ip:=192.168.1.100 \
+  car_id:=car2
 ```
 
-This launches `track_navigator`, `websocket_client`, `car_filter`, and `obstacle_detector` under the given namespace.
+This launches `track_navigator`, `websocket_client`, `car_filter`, and `obstacle_detector`.
+
+> **Do NOT use ROS namespaces to distinguish cars.** Namespacing causes relative
+> topic subscriptions (`amcl_pose`, `follow_waypoints` action server) to resolve
+> incorrectly. Use `car_id` instead.
 
 | Argument | Default | Description |
 |---|---|---|
 | `mode` | `multi` | `multi` = full stack, `single` = track_navigator only, `server` = relay server only |
+| `car_id` | `car_default` | **Unique ID for this car** (e.g. `car1`, `car2`). Must differ between cars. |
 | `server_ip` | `localhost` | IP of the machine running `websocket_server` |
 | `server_port` | `8765` | WebSocket port |
-| `namespace` | `` | ROS namespace for this car (e.g. `/car1`) |
 | `car_margin` | `0.05` | Extra margin (m) added to each side of the OBB when filtering lidar |
 | `log_metrics` | `false` | Set to `true` to launch the metrics logger |
 | `metrics_output_file` | `` | CSV path for metrics; empty = auto-generate in `/tmp` |
