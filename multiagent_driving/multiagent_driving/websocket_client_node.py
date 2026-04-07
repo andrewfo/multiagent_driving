@@ -22,6 +22,7 @@ Publications
 /commander_cmd     (String)                    – commands from the centralized commander
 """
 
+import asyncio
 import json
 import math
 import threading
@@ -33,7 +34,7 @@ from geometry_msgs.msg import Pose, PoseArray, PoseWithCovarianceStamped
 from nav_msgs.msg import Odometry
 from std_msgs.msg import String
 
-import websocket
+import websockets
 
 
 class WebsocketClientNode(Node):
@@ -68,9 +69,13 @@ class WebsocketClientNode(Node):
         self._current_goal: dict | None = None           # {x, y} or None
         self._lock = threading.Lock()
 
-        # --- WebSocket (runs in a background thread) ------------------------
-        self.ws: websocket.WebSocketApp | None = None
-        self._connect_ws()
+        # --- WebSocket (asyncio loop in background thread) ------------------
+        self._ws = None             # current websockets connection
+        self._ws_connected = False
+        self._loop = asyncio.new_event_loop()
+        t = threading.Thread(target=self._loop.run_forever, daemon=True)
+        t.start()
+        asyncio.run_coroutine_threadsafe(self._ws_connect_loop(), self._loop)
 
         # --- Subscriptions --------------------------------------------------
         self.create_subscription(
@@ -85,7 +90,6 @@ class WebsocketClientNode(Node):
 
         # --- Timers ---------------------------------------------------------
         self.create_timer(0.1, self._publish_swarm_poses)       # 10 Hz
-        self.create_timer(5.0, self._check_connection)          # reconnect check
         self.create_timer(1.0, self._cleanup_stale_neighbors)   # stale check
 
         self.get_logger().info(
@@ -93,22 +97,28 @@ class WebsocketClientNode(Node):
         )
 
     # ------------------------------------------------------------------ ws
-    def _connect_ws(self):
-        """Create and start a WebSocketApp in a daemon thread."""
-        self.ws = websocket.WebSocketApp(
-            self.ws_url,
-            on_open=self._on_open,
-            on_message=self._on_message,
-            on_error=self._on_error,
-            on_close=self._on_close,
-        )
-        t = threading.Thread(target=self.ws.run_forever, daemon=True)
-        t.start()
 
-    def _on_open(self, ws):
-        self.get_logger().info(f"[{self.car_id}] Connected to {self.ws_url}")
+    async def _ws_connect_loop(self):
+        """Continuously connect to the server, reconnecting on any failure."""
+        while True:
+            try:
+                async with websockets.connect(self.ws_url) as ws:
+                    self._ws = ws
+                    self._ws_connected = True
+                    self.get_logger().info(
+                        f"[{self.car_id}] Connected to {self.ws_url}"
+                    )
+                    async for raw in ws:
+                        self._on_message(raw)
+            except Exception as exc:
+                self._ws = None
+                self._ws_connected = False
+                self.get_logger().warn(
+                    f"[{self.car_id}] WebSocket disconnected: {exc}. Retrying in 2s..."
+                )
+            await asyncio.sleep(2.0)
 
-    def _on_message(self, ws, raw):
+    def _on_message(self, raw: str):
         try:
             data = json.loads(raw)
         except json.JSONDecodeError:
@@ -142,22 +152,19 @@ class WebsocketClientNode(Node):
             elif cid in self.neighbor_obstacles:
                 del self.neighbor_obstacles[cid]
 
-    def _on_error(self, ws, error):
-        self.get_logger().warn(f"WebSocket error: {error}")
-
-    def _on_close(self, ws, status_code, msg):
-        self.get_logger().warn("Disconnected from server.")
-
-    def _check_connection(self):
-        """Attempt reconnect if the socket is down."""
-        if self.ws is None or not (self.ws.sock and self.ws.sock.connected):
-            self.get_logger().info("Reconnecting to WebSocket server...")
-            self._connect_ws()
+    def _ws_send(self, payload: dict):
+        """Thread-safe send from ROS callbacks into the asyncio loop."""
+        if not self._ws_connected or self._ws is None:
+            return
+        asyncio.run_coroutine_threadsafe(
+            self._ws.send(json.dumps(payload)), self._loop
+        )
 
     # -------------------------------------------------------------- ROS cb
+
     def _pose_cb(self, msg: PoseWithCovarianceStamped):
         """Forward this car's pose, velocity, status, and obstacles to the server."""
-        if not (self.ws and self.ws.sock and self.ws.sock.connected):
+        if not self._ws_connected:
             return
 
         p = msg.pose.pose
@@ -178,10 +185,7 @@ class WebsocketClientNode(Node):
         if self.local_obstacles:
             payload["obstacles"] = self.local_obstacles
 
-        try:
-            self.ws.send(json.dumps(payload))
-        except Exception as exc:
-            self.get_logger().warn(f"Send failed: {exc}")
+        self._ws_send(payload)
 
     def _odom_cb(self, msg: Odometry):
         """Update linear velocity and derive status from it."""
@@ -216,6 +220,7 @@ class WebsocketClientNode(Node):
         self._current_goal = None
 
     # ---------------------------------------------------------- publishing
+
     def _publish_swarm_poses(self):
         """Publish neighbor car poses and obstacles as PoseArrays."""
         now = self.get_clock().now().to_msg()
@@ -251,6 +256,7 @@ class WebsocketClientNode(Node):
 
 
 # ---------------------------------------------------------------- helpers
+
 def _quaternion_to_yaw(x, y, z, w) -> float:
     siny_cosp = 2.0 * (w * z + x * y)
     cosy_cosp = 1.0 - 2.0 * (y * y + z * z)
@@ -262,6 +268,7 @@ def _yaw_to_quaternion(yaw: float) -> tuple[float, float, float, float]:
 
 
 # ------------------------------------------------------------------ main
+
 def main(args=None):
     rclpy.init(args=args)
     node = WebsocketClientNode()
