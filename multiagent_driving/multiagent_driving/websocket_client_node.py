@@ -48,8 +48,10 @@ class WebsocketClientNode(Node):
         server_port = self.get_parameter("server_port").get_parameter_value().integer_value
         self.ws_url = f"ws://{server_ip}:{server_port}"
 
-        # Car ID derived from namespace (e.g. /car1 -> "car1")
-        self.car_id = self.get_namespace().strip("/") or "car_default"
+        # Car ID: explicit parameter takes precedence, then namespace, then fallback
+        self.declare_parameter("car_id", "")
+        car_id_param = self.get_parameter("car_id").get_parameter_value().string_value
+        self.car_id = car_id_param or self.get_namespace().strip("/") or "car_default"
 
         # --- Publishers -----------------------------------------------------
         self.swarm_pub = self.create_publisher(PoseArray, "/swarm_poses", 10)
