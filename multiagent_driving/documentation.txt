@@ -55,7 +55,7 @@ command; the mode: argument controls what that car's role is.
 --------------------------------------------------------------------------------
 
   # 1. Start the navigation stack:
-  cd ~/roboracer_ws/tmux/navstack/ && MAP=track tmuxinator
+  cd ~/roboracer_ws/tmux/navstack/ && MAP=gdc_3n tmuxinator
 
   # 2. Set the initial pose in RViz2 (2D Pose Estimate — click and drag).
 

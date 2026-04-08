@@ -24,6 +24,7 @@ How to get your waypoint coordinates:
 """
 # These are actually run on the robot itself so don't worry if they're not resolved 
 import math
+import time
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
@@ -129,11 +130,12 @@ class TrackNavigator(Node):
             goal_handle = send_future.result()
 
             if not goal_handle.accepted:
-                self.get_logger().error(
-                    'Goal rejected by Nav2. Is the navigation stack running '
-                    'and is the initial pose set?'
+                self.get_logger().warn(
+                    'Goal rejected by Nav2 — retrying in 3s. '
+                    'Is the navigation stack running and is the initial pose set?'
                 )
-                break
+                time.sleep(3.0)
+                continue
 
             result_future = goal_handle.get_result_async()
             rclpy.spin_until_future_complete(self, result_future)
