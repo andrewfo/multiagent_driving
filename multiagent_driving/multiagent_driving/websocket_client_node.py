@@ -67,6 +67,7 @@ class WebsocketClientNode(Node):
         self._vx: float = 0.0                           # linear velocity from odom
         self._status: str = "idle"                       # navigating / idle
         self._current_goal: dict | None = None           # {x, y} or None
+        self._last_payload: dict | None = None          # cached for heartbeat
         self._lock = threading.Lock()
 
         # --- WebSocket (asyncio loop in background thread) ------------------
@@ -91,6 +92,7 @@ class WebsocketClientNode(Node):
         # --- Timers ---------------------------------------------------------
         self.create_timer(0.1, self._publish_swarm_poses)       # 10 Hz
         self.create_timer(1.0, self._cleanup_stale_neighbors)   # stale check
+        self.create_timer(0.5, self._heartbeat_cb)              # heartbeat
 
         self.get_logger().info(
             f"[{self.car_id}] WebSocket client targeting {self.ws_url}"
@@ -185,6 +187,16 @@ class WebsocketClientNode(Node):
         if self.local_obstacles:
             payload["obstacles"] = self.local_obstacles
 
+        self._last_payload = payload
+        self._ws_send(payload)
+
+    def _heartbeat_cb(self):
+        """Re-send last known state so peers don't expire us as stale."""
+        if not self._ws_connected:
+            return
+        payload = self._last_payload
+        if payload is None:
+            return
         self._ws_send(payload)
 
     def _odom_cb(self, msg: Odometry):

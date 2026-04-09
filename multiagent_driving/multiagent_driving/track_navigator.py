@@ -8,7 +8,9 @@ car drive laps around a track continuously.
 Prerequisites:
   1. Navigation stack running:
        ros2 launch av_navigation navigation.launch.py map:=<your_map>
-  2. Initial pose set in RViz2 (click "2D Pose Estimate" and drag on map)
+  2. Initial pose set via EITHER:
+       a. Launch parameters: initial_pose_x, initial_pose_y, initial_pose_yaw
+       b. RViz2: click "2D Pose Estimate" and drag on map
   3. R1 held on joystick to enable motion (or joystick in autonomous mode)
 
 Run:
@@ -22,14 +24,15 @@ How to get your waypoint coordinates:
   - Copy x, y from pose.pose.position; compute yaw from pose.pose.orientation
   - OR use RViz2 "Publish Point" tool and click on the map to read coordinates
 """
-# These are actually run on the robot itself so don't worry if they're not resolved 
+# These are actually run on the robot itself so don't worry if they're not resolved
 import math
 import time
 import rclpy
 from rclpy.action import ActionClient
 from rclpy.node import Node
+import tf2_ros
 
-from geometry_msgs.msg import PoseStamped
+from geometry_msgs.msg import PoseStamped, PoseWithCovarianceStamped
 from nav2_msgs.action import FollowWaypoints
 
 
@@ -104,7 +107,124 @@ class TrackNavigator(Node):
         super().__init__('track_navigator')
         self._action_client = ActionClient(self, FollowWaypoints, 'follow_waypoints')
 
+        # Optional programmatic initial pose (NaN = not set, use RViz2 instead)
+        self.declare_parameter('initial_pose_x', float('nan'))
+        self.declare_parameter('initial_pose_y', float('nan'))
+        self.declare_parameter('initial_pose_yaw', float('nan'))
+        self.declare_parameter('amcl_timeout', 30.0)
+
+        # AMCL readiness tracking
+        self._amcl_pose_received = False
+        self._amcl_sub = self.create_subscription(
+            PoseWithCovarianceStamped, '/amcl_pose', self._amcl_pose_cb, 10)
+
+        # Publisher for programmatic initial pose
+        self._initial_pose_pub = self.create_publisher(
+            PoseWithCovarianceStamped, '/initialpose', 10)
+
+        # TF listener for diagnostics
+        self._tf_buffer = tf2_ros.Buffer()
+        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self)
+
+    # ------------------------------------------------------------------
+    # AMCL readiness helpers
+    # ------------------------------------------------------------------
+
+    def _amcl_pose_cb(self, msg: PoseWithCovarianceStamped):
+        """Record that at least one valid AMCL pose has been received."""
+        if not self._amcl_pose_received:
+            self.get_logger().info(
+                f'AMCL pose received: ({msg.pose.pose.position.x:.2f}, '
+                f'{msg.pose.pose.position.y:.2f}). Localization is active.')
+        self._amcl_pose_received = True
+
+    def _publish_initial_pose(self):
+        """If initial_pose params are set, publish to /initialpose for AMCL."""
+        x = self.get_parameter('initial_pose_x').value
+        y = self.get_parameter('initial_pose_y').value
+        yaw = self.get_parameter('initial_pose_yaw').value
+
+        if math.isnan(x) or math.isnan(y) or math.isnan(yaw):
+            self.get_logger().info(
+                'No initial_pose parameters set. '
+                'Waiting for initial pose from RViz2 or another source.')
+            return
+
+        self.get_logger().info(
+            f'Publishing initial pose: x={x:.2f}, y={y:.2f}, yaw={yaw:.2f}')
+        msg = PoseWithCovarianceStamped()
+        msg.header.frame_id = 'map'
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.pose.pose.position.x = x
+        msg.pose.pose.position.y = y
+        msg.pose.pose.position.z = 0.0
+        qx, qy, qz, qw = yaw_to_quaternion(yaw)
+        msg.pose.pose.orientation.x = qx
+        msg.pose.pose.orientation.y = qy
+        msg.pose.pose.orientation.z = qz
+        msg.pose.pose.orientation.w = qw
+        msg.pose.covariance[0] = 0.25    # x variance
+        msg.pose.covariance[7] = 0.25    # y variance
+        msg.pose.covariance[35] = 0.068  # yaw variance
+        self._initial_pose_pub.publish(msg)
+
+    def _wait_for_amcl(self) -> bool:
+        """Block until AMCL publishes at least one pose, with timeout."""
+        timeout = self.get_parameter('amcl_timeout').value
+        self.get_logger().info(
+            f'Waiting for AMCL pose on /amcl_pose (timeout: {timeout:.0f}s)...')
+        start = time.time()
+        republish_interval = 5.0
+        last_republish = start
+        while rclpy.ok() and not self._amcl_pose_received:
+            rclpy.spin_once(self, timeout_sec=0.5)
+            elapsed = time.time() - start
+            if elapsed >= timeout:
+                self.get_logger().error(
+                    f'Timed out after {timeout:.0f}s waiting for AMCL pose. '
+                    'Check that: (1) the navigation stack is running '
+                    '(ros2 launch av_navigation navigation.launch.py), '
+                    '(2) the initial pose has been set in RViz2, or '
+                    'pass initial_pose_x/y/yaw parameters.')
+                return False
+            if time.time() - last_republish >= republish_interval:
+                self._publish_initial_pose()
+                self._log_diagnostic_info()
+                last_republish = time.time()
+        return True
+
+    def _log_diagnostic_info(self):
+        """Log diagnostic info about Nav2 readiness state."""
+        try:
+            self._tf_buffer.lookup_transform('map', 'odom', rclpy.time.Time())
+            tf_ok = True
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException):
+            tf_ok = False
+        try:
+            self._tf_buffer.lookup_transform('odom', 'base_link', rclpy.time.Time())
+            odom_ok = True
+        except (tf2_ros.LookupException, tf2_ros.ConnectivityException,
+                tf2_ros.ExtrapolationException):
+            odom_ok = False
+        self.get_logger().warn(
+            f'Nav2 readiness: '
+            f'AMCL pose: {"received" if self._amcl_pose_received else "NOT received"}, '
+            f'map->odom TF: {"OK" if tf_ok else "MISSING"}, '
+            f'odom->base_link TF: {"OK" if odom_ok else "MISSING"}')
+
+    # ------------------------------------------------------------------
+
     def run(self):
+        # 1. Optionally publish programmatic initial pose
+        self._publish_initial_pose()
+
+        # 2. Wait for AMCL to confirm localization is active
+        if not self._wait_for_amcl():
+            self.get_logger().error('Cannot proceed without AMCL localization. Exiting.')
+            return
+
+        # 3. Wait for the FollowWaypoints action server
         self.get_logger().info('Waiting for Nav2 FollowWaypoints server...')
         self._action_client.wait_for_server()
         self.get_logger().info('Server ready. Starting autonomous laps.')
@@ -130,10 +250,10 @@ class TrackNavigator(Node):
             goal_handle = send_future.result()
 
             if not goal_handle.accepted:
+                self._log_diagnostic_info()
                 self.get_logger().warn(
                     'Goal rejected by Nav2 — retrying in 3s. '
-                    'Is the navigation stack running and is the initial pose set?'
-                )
+                    'See diagnostic info above for details.')
                 time.sleep(3.0)
                 continue
 

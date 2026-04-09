@@ -47,17 +47,25 @@ command; the mode: argument controls what that car's role is.
     - Start the server BEFORE launching any car in multi or server_and_drive mode.
     - Never use ROS namespaces (-r __ns:=) to distinguish cars — it breaks
       relative topic subscriptions (amcl_pose, follow_waypoints).
-    - On every car, the Nav2 navigation stack must already be running and the
-      initial pose set in RViz2 before launching any of the commands below.
+    - On every car, the Nav2 navigation stack must already be running before
+      launching any of the commands below.
+    - The initial pose can be set via launch parameters (initial_pose_x,
+      initial_pose_y, initial_pose_yaw) OR manually in RViz2.
+      When launch parameters are provided, the track_navigator publishes
+      the initial pose to AMCL automatically — no RViz2 step needed.
 
 --------------------------------------------------------------------------------
   PRE-LAUNCH (every car, every experiment)
 --------------------------------------------------------------------------------
 
   # 1. Start the navigation stack:
-  cd ~/roboracer_ws/tmux/navstack/ && MAP=gdc_3n tmuxinator
+  cd ~/roboracer_ws/tmux/navstack/ && MAP=track tmuxinator
 
-  # 2. Set the initial pose in RViz2 (2D Pose Estimate — click and drag).
+  # 2. Set the initial pose — choose ONE of:
+  #    a. Via launch parameters (recommended — no RViz2 needed):
+  #       Append:  initial_pose_x:=<X> initial_pose_y:=<Y> initial_pose_yaw:=<YAW>
+  #       to the multiagent.launch.py command below.
+  #    b. Manually in RViz2 (2D Pose Estimate — click and drag).
 
 --------------------------------------------------------------------------------
   2-CAR EXPERIMENT — laptop hosts the server (recommended)
@@ -69,11 +77,15 @@ command; the mode: argument controls what that car's role is.
 
   Car 1:
     ros2 launch multiagent_driving multiagent.launch.py \
-      mode:=multi car_id:=car1 server_ip:=<LAPTOP_IP>
+      mode:=multi car_id:=car1 server_ip:=<LAPTOP_IP> \
+      initial_pose_x:=<X> initial_pose_y:=<Y> initial_pose_yaw:=<YAW>
 
   Car 2:
     ros2 launch multiagent_driving multiagent.launch.py \
-      mode:=multi car_id:=car2 server_ip:=<LAPTOP_IP>
+      mode:=multi car_id:=car2 server_ip:=<LAPTOP_IP> \
+      initial_pose_x:=<X> initial_pose_y:=<Y> initial_pose_yaw:=<YAW>
+
+  (Omit initial_pose_* args to set the pose manually in RViz2 instead.)
 
 --------------------------------------------------------------------------------
   3-CAR EXPERIMENT — laptop hosts the server
@@ -82,13 +94,16 @@ command; the mode: argument controls what that car's role is.
   Laptop:   ros2 launch multiagent_driving multiagent.launch.py mode:=server
 
   Car 1:    ros2 launch multiagent_driving multiagent.launch.py \
-              mode:=multi car_id:=car1 server_ip:=<LAPTOP_IP>
+              mode:=multi car_id:=car1 server_ip:=<LAPTOP_IP> \
+              initial_pose_x:=<X> initial_pose_y:=<Y> initial_pose_yaw:=<YAW>
 
   Car 2:    ros2 launch multiagent_driving multiagent.launch.py \
-              mode:=multi car_id:=car2 server_ip:=<LAPTOP_IP>
+              mode:=multi car_id:=car2 server_ip:=<LAPTOP_IP> \
+              initial_pose_x:=<X> initial_pose_y:=<Y> initial_pose_yaw:=<YAW>
 
   Car 3:    ros2 launch multiagent_driving multiagent.launch.py \
-              mode:=multi car_id:=car3 server_ip:=<LAPTOP_IP>
+              mode:=multi car_id:=car3 server_ip:=<LAPTOP_IP> \
+              initial_pose_x:=<X> initial_pose_y:=<Y> initial_pose_yaw:=<YAW>
 
   To add more cars, repeat the Car N pattern with a new car_id each time.
 
@@ -165,10 +180,15 @@ Before using either script you need:
   6. VESC driver publishing odometry.
   7. Static transforms active.
 
-  8. Initial pose set in RViz2:
-       - Connect via TurboVNC
-       - Click "2D Pose Estimate" in RViz2
-       - Click and drag on the map to place the car's starting position
+  8. Initial pose set — choose ONE of:
+       a. Via launch parameters (recommended):
+            Append initial_pose_x:=<X> initial_pose_y:=<Y> initial_pose_yaw:=<YAW>
+            to the launch command. The track_navigator node publishes the pose
+            to AMCL automatically and waits for AMCL to confirm.
+       b. Manually in RViz2:
+            - Connect via TurboVNC
+            - Click "2D Pose Estimate" in RViz2
+            - Click and drag on the map to place the car's starting position
 
 
 ================================================================================
@@ -264,8 +284,32 @@ USAGE
 
     ros2 run multiagent_driving track_navigator
 
-  There are no command-line arguments. Configuration is done by editing
-  the script directly (see Configuration below).
+  With programmatic initial pose (no RViz2 needed):
+
+    ros2 run multiagent_driving track_navigator \
+      --ros-args -p initial_pose_x:=-0.3 -p initial_pose_y:=-0.25 \
+      -p initial_pose_yaw:=0.0
+
+  Or via the launch file:
+
+    ros2 launch multiagent_driving multiagent.launch.py \
+      mode:=single initial_pose_x:=-0.3 initial_pose_y:=-0.25 \
+      initial_pose_yaw:=0.0
+
+ROS PARAMETERS
+
+  initial_pose_x    (float)  Initial X position for AMCL. Default: NaN (not
+                              set — use RViz2 instead). When set, the node
+                              publishes the pose to /initialpose for AMCL.
+
+  initial_pose_y    (float)  Initial Y position for AMCL. Default: NaN.
+
+  initial_pose_yaw  (float)  Initial yaw (radians) for AMCL. Default: NaN.
+                              All three must be set for programmatic initial
+                              pose to take effect.
+
+  amcl_timeout      (float)  Seconds to wait for AMCL to publish a valid pose
+                              before giving up. Default: 30.0.
 
 CONFIGURATION (edit track_navigator.py)
 
@@ -286,10 +330,15 @@ STEP-BY-STEP
   1. Make sure the navigation stack is running:
        cd ~/roboracer_ws/tmux/navstack/ && MAP=track tmuxinator
 
-  2. Set the initial pose in RViz2:
-       - Open RViz2 via TurboVNC
-       - Click "2D Pose Estimate"
-       - Click and drag on the map at the car's actual position
+  2. Set the initial pose — choose ONE of:
+       a. Via launch parameters (recommended):
+            ros2 launch multiagent_driving multiagent.launch.py \
+              mode:=single initial_pose_x:=<X> initial_pose_y:=<Y> \
+              initial_pose_yaw:=<YAW>
+       b. Manually in RViz2:
+            - Open RViz2 via TurboVNC
+            - Click "2D Pose Estimate"
+            - Click and drag on the map at the car's actual position
 
   3. Make sure TRACK_WAYPOINTS_XY has been populated (by running set_waypoints
      or by manually entering coordinates).
@@ -300,6 +349,9 @@ STEP-BY-STEP
        ros2 run multiagent_driving track_navigator
 
   6. The terminal will show progress:
+       [INFO] [track_navigator]: Publishing initial pose: x=-0.30, y=-0.25, yaw=0.00
+       [INFO] [track_navigator]: Waiting for AMCL pose on /amcl_pose (timeout: 30s)...
+       [INFO] [track_navigator]: AMCL pose received: (-0.30, -0.25). Localization is active.
        [INFO] [track_navigator]: Waiting for Nav2 FollowWaypoints server...
        [INFO] [track_navigator]: Server ready. Starting autonomous laps.
        [INFO] [track_navigator]: --- Lap 1 ---
@@ -314,9 +366,21 @@ STEP-BY-STEP
 
 TROUBLESHOOTING
 
+  "Timed out after 30s waiting for AMCL pose"
+    - The navigation stack is not running. Start it first:
+        ros2 launch av_navigation navigation.launch.py map:=<MAP>
+    - The initial pose was not set. Either pass initial_pose_x/y/yaw
+      parameters or set it in RViz2 (2D Pose Estimate).
+    - AMCL is not publishing on /amcl_pose. Check:
+        ros2 topic hz /amcl_pose
+
   "Goal rejected by Nav2"
-    - The navigation stack is not running, or the initial pose was not set.
-    - Make sure you clicked "2D Pose Estimate" in RViz2 first.
+    - The node now logs diagnostic info (AMCL pose status, map->odom TF,
+      odom->base_link TF) above this message. Check the diagnostics.
+    - If map->odom TF is MISSING: AMCL has not converged. Wait longer or
+      re-set the initial pose.
+    - If odom->base_link TF is MISSING: odometry/VESC driver not running.
+    - The node retries every 3 seconds automatically.
 
   "Missed waypoints: [3, 7]"
     - Nav2 could not reach those waypoints (obstacle in the way, waypoint
@@ -612,7 +676,7 @@ NAV2 CONFIGURATION
 STEP-BY-STEP
 
   1. Make sure the navigation stack is running and AMCL is publishing
-     amcl_pose (initial pose set in RViz2).
+     amcl_pose (initial pose set via launch params or RViz2).
 
   2. Make sure the websocket_client is running and /swarm_poses is being
      published (at least one other car connected to the server).
@@ -768,8 +832,8 @@ PUBLICATIONS
 
 STEP-BY-STEP
 
-  1. Make sure the navigation stack is running and the initial pose is set
-     in RViz2 (AMCL must be publishing amcl_pose).
+  1. Make sure the navigation stack is running and AMCL is publishing
+     amcl_pose (initial pose set via launch params or RViz2).
 
   2. Make sure car_filter is running (so /scan_filtered is available).
 
@@ -921,7 +985,7 @@ STEP-BY-STEP
          mode:=single log_metrics:=true \
          metrics_output_file:=/tmp/baseline_run1.csv
 
-  3. Set initial pose in RViz2 on all participating cars.
+  3. Set initial pose on all participating cars (via launch params or RViz2).
 
   4. Start autonomous driving and let the cars complete several laps.
 
@@ -962,32 +1026,25 @@ TROUBLESHOOTING
   # 1. Start the navigation stack on every car
   cd ~/roboracer_ws/tmux/navstack/ && MAP=track tmuxinator
 
-  # 2. Set initial pose in RViz2 on every car (2D Pose Estimate)
-
-  # 3. Start the WebSocket server on one machine
+  # 2. Start the WebSocket server on one machine
   ros2 run multiagent_driving websocket_server
 
-  # 4. Start the WebSocket client on every car (use a unique car_id per car)
-  ros2 run multiagent_driving websocket_client \
-    --ros-args -p car_id:=car1 -p server_ip:=<SERVER_IP>
+  # 3. Launch the multiagent stack on every car (includes initial pose)
+  #    The initial pose params remove the need for manual RViz2 interaction.
+  ros2 launch multiagent_driving multiagent.launch.py \
+    mode:=multi car_id:=car1 server_ip:=<SERVER_IP> \
+    initial_pose_x:=<X> initial_pose_y:=<Y> initial_pose_yaw:=<YAW>
   # On the second car:
-  # ros2 run multiagent_driving websocket_client \
-  #   --ros-args -p car_id:=car2 -p server_ip:=<SERVER_IP>
+  # ros2 launch multiagent_driving multiagent.launch.py \
+  #   mode:=multi car_id:=car2 server_ip:=<SERVER_IP> \
+  #   initial_pose_x:=<X> initial_pose_y:=<Y> initial_pose_yaw:=<YAW>
 
-  # 5. Start the car filter on every car (prevents double-counting)
-  ros2 run multiagent_driving car_filter
+  # 4. Hold R1 on the PS4 controller (or autonomous mode) on every car.
 
-  # 6. Start the obstacle detector on every car (shares novel obstacles)
-  ros2 run multiagent_driving obstacle_detector
+  # 5. (optional) Log experiment metrics — append to the launch command:
+  #    log_metrics:=true metrics_output_file:=/tmp/swarm_car1.csv
 
-  # 7. Start autonomous driving on every car (hold R1 on controller)
-  ros2 run multiagent_driving track_navigator
-
-  # 8. (optional) Log experiment metrics
-  ros2 run multiagent_driving metrics_logger \
-    --ros-args -p output_file:=/tmp/swarm_run1.csv
-
-  # 9. Ctrl-C to stop. Collect CSVs with: scp roboracer@<IP>:/tmp/*.csv ./data/
+  # 6. Ctrl-C to stop. Collect CSVs with: scp roboracer@<IP>:/tmp/*.csv ./data/
 
 
 ================================================================================
@@ -998,6 +1055,7 @@ TROUBLESHOOTING
   cd ~/roboracer_ws/tmux/navstack/ && MAP=track tmuxinator
 
   # 2. Set initial pose in RViz2 (2D Pose Estimate)
+  #    OR pass initial_pose_x/y/yaw in the launch command below.
 
   # 3. Record waypoints (drive the car manually)
   ros2 run multiagent_driving set_waypoints --interval 3
@@ -1011,6 +1069,7 @@ TROUBLESHOOTING
   # 5. Run autonomous laps with metrics logging (hold R1 on controller)
   ros2 launch multiagent_driving multiagent.launch.py \
     mode:=single log_metrics:=true \
+    initial_pose_x:=-0.3 initial_pose_y:=-0.25 initial_pose_yaw:=0.0 \
     metrics_output_file:=/tmp/baseline_run1.csv
 
   # 6. Ctrl-C to stop. Collect CSV with: scp roboracer@<IP>:/tmp/baseline_run1.csv ./data/

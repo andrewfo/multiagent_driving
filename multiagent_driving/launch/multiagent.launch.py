@@ -101,6 +101,16 @@ def generate_launch_description():
         'near_miss_threshold', default_value='0.35',
         description='Scan range (m) that triggers a near-miss event in the metrics logger')
 
+    initial_pose_x_arg = DeclareLaunchArgument(
+        'initial_pose_x', default_value='NaN',
+        description='Initial pose X for AMCL (NaN = use RViz2 instead)')
+    initial_pose_y_arg = DeclareLaunchArgument(
+        'initial_pose_y', default_value='NaN',
+        description='Initial pose Y for AMCL (NaN = use RViz2 instead)')
+    initial_pose_yaw_arg = DeclareLaunchArgument(
+        'initial_pose_yaw', default_value='NaN',
+        description='Initial pose yaw (rad) for AMCL (NaN = use RViz2 instead)')
+
     # ---------- substitutions ----------
     mode = LaunchConfiguration('mode')
     # websocket_server runs for "server" and "server_and_drive"
@@ -129,6 +139,11 @@ def generate_launch_description():
                 executable='track_navigator',
                 name='track_navigator',
                 output='screen',
+                parameters=[{
+                    'initial_pose_x': LaunchConfiguration('initial_pose_x'),
+                    'initial_pose_y': LaunchConfiguration('initial_pose_y'),
+                    'initial_pose_yaw': LaunchConfiguration('initial_pose_yaw'),
+                }],
             ),
 
             # Multi-car only
@@ -185,6 +200,9 @@ def generate_launch_description():
         log_metrics_arg,
         metrics_output_file_arg,
         near_miss_threshold_arg,
+        initial_pose_x_arg,
+        initial_pose_y_arg,
+        initial_pose_yaw_arg,
         websocket_server_node,
         car_nodes,
         metrics_logger_node,
